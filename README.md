@@ -9,7 +9,7 @@ The Teukolsky equation is decomposed into angular modes as $\psi=\sum_m \psi_{m}
 ```math
 \begin{align*}
 (\Sigma + 2Mr){{\partial^2 {\psi_m}}\over 
-{\partial t^2}} -&\triangle {{\partial^2 {\psi_m}}\over 
+{\partial t^2}} -&\Delta {{\partial^2 {\psi_m}}\over 
 {\partial r^2}} - (2\, a\, i\, m + 6\, r - 6\, M){{\partial {\psi_m}}\over
 {\partial r}} \\
 &-{{1}\over {\sin \theta}}{{\partial}\over {\partial \theta}} \left (
