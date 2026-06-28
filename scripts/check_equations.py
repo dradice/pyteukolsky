@@ -10,6 +10,11 @@ Two checks:
     The PTC equation should follow from the 'big psi_4' Teukolsky equation
     (lines 354-391) via psi = (r - i a cos theta)^4 psi_4, up to an overall
     nonzero factor (which the second-derivative coefficients fix to 2*Sigma*zeta^4).
+
+  CHECK 3 (numerics: angular variable mu = cos theta):
+    Confirms the substitution used by the solver. The angular sector of the
+    mode equation, written with mu = cos theta, becomes the Legendre-type
+    operator  -d/dmu[(1-mu^2) d/dmu]  with potential  (2 mu - m)^2/(1-mu^2) - 2.
 """
 import sympy as sp
 
@@ -120,3 +125,40 @@ def BIG(P4):
 big_in_psi = sp.expand( BIG(zeta**(-4)*psi) * (2*Sigma*zeta**4) )
 ptc        = PTC(psi)
 compare(big_in_psi, ptc, psi, "2*Sigma*zeta^4 * BIG[zeta^-4 psi]   vs   PTC[psi]")
+
+# ======================================================================
+# CHECK 3 : angular sector under the substitution mu = cos(theta)
+# ======================================================================
+print()
+print("#"*70)
+print("CHECK 3 : angular sector rewritten with mu = cos(theta)")
+print("#"*70)
+
+mu = sp.Symbol('mu', real=True)
+
+def to_mu(expr):
+    """Replace cos(theta) -> mu and sin(theta) -> sqrt(1-mu^2)."""
+    return expr.subs({c: mu, s: sp.sqrt(1 - mu**2)})
+
+# --- 3a: the potential V collapses to (2 mu - m)^2/(1-mu^2) - 2 ---
+# V written purely with c = cos(theta), s = sin(theta) (cot = c/s).
+V_theta = 4*(c/s)**2 - 2 + m**2/s**2 - 4*m*(c/s)/s
+V_mu    = (2*mu - m)**2/(1 - mu**2) - 2
+res_V   = sp.simplify(to_mu(V_theta) - V_mu)
+print("\n--- 3a: potential V(theta) -> (2 mu - m)^2/(1-mu^2) - 2 ---")
+print("  residual =", res_V, " ->", "OK" if res_V == 0 else "MISMATCH")
+
+# --- 3b: full angular contribution to the mode equation ---
+# angular part of MODE acting on F:        -(1/s) d/dth( s dF/dth ) + V F
+# claim (with F = g(mu), mu = cos theta):  -d/dmu[(1-mu^2) dF/dmu] + V_mu F
+a_   = sp.symbols('a0:6')                      # generic quintic test function
+g_mu = sum(a_[k]*mu**k for k in range(6))
+g_th = g_mu.subs(mu, c)                        # the same F as a function of theta
+
+ang_theta = -(1/s)*sp.diff(s*sp.diff(g_th, th), th) + V_theta*g_th
+ang_mu    = -sp.diff((1 - mu**2)*sp.diff(g_mu, mu), mu) + V_mu*g_mu
+
+res_ang = sp.simplify(ang_theta - ang_mu.subs(mu, c))
+print("\n--- 3b: full angular operator (generic quintic test function) ---")
+print("  [theta-form] - [mu-form] =", res_ang,
+      " ->", "OK" if res_ang == 0 else "MISMATCH")
