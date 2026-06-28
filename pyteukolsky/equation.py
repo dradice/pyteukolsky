@@ -83,6 +83,13 @@ class TeukolskyRHS:
         dpsi_dt = v.copy()
         dv_dt   = self.invA * (L + self.B * v_r + self.Cv * v)
 
+        # Sommerfeld outgoing BC at outer radial boundary:
+        #   d_t psi = -d_r psi - psi/r  and  d_t v = -d_r v - v/r
+        n_out = g.ghost + g.Nr - 1
+        r_out = g.r[n_out]
+        dpsi_dt[:, n_out] = -(psi_r[:, n_out] + psi[:, n_out] / r_out)
+        dv_dt[:, n_out]   = -(v_r[:, n_out]   + v[:, n_out]   / r_out)
+
         if self.dissipation > 0:
             eps = self.dissipation
             dpsi_dt += g.ko_dissipation_r(psi, eps) + g.ko_dissipation_mu(psi, eps)
