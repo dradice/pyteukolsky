@@ -119,8 +119,7 @@ class Evolution:
         Delta_eff      = np.maximum(Delta_int, 0.0)
         one_minus_mu2  = 1.0 - MU_int**2                # positive on interior
 
-        # Physical radial cell size: dr = drdx * dx = r * dx (log map)
-        dr_local = g.r[g.ghost:g.ghost + g.Nr] * g.dx   # (Nr,)
+        dr_local = g.dr_cell   # (Nr,) — cell widths at interior points
 
         with np.errstate(divide='ignore', invalid='ignore'):
             c_r2  = Delta_eff / A_int

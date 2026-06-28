@@ -96,18 +96,21 @@ initial time slices supplied by the user are used only to *seed* $(\psi, v)$
 
 ### 1.2 Spatial grid
 
-- **Radial.** A logarithmically stretched grid: a uniform coordinate $x$ with a
-  map $r=r(x)$, default $r = M\,e^{x}$ (so $r'(x)=r$, $r''(x)=r$). The radial
-  domain runs from $r_\min$ *inside* the horizon $r_+ = M+\sqrt{M^2-a^2}$ to a
-  large $r_\max$. Uniform $x$ → fine resolution near the horizon, coarse far
-  away. Radial derivatives transform as
+- **Radial.** The grid stores cell-centre positions `r` directly.  By default
+  they are uniformly spaced from $r_\min$ to $r_\max$ with $N_r$ cells; an
+  arbitrary monotone sequence may be supplied via `r_array`.  The domain runs
+  from $r_\min$ *inside* the horizon $r_+ = M+\sqrt{M^2-a^2}$ to a large
+  $r_\max$.  Ghost cells at both ends extend the array using the local boundary
+  spacing, keeping FD stencils well-conditioned.  Radial FD operators use
+  2nd-order formulas for general non-uniform spacing:
 
   ```math
-  \partial_r f = \frac{f_x}{r'},\qquad
-  \partial_r^2 f = \frac{f_{xx} - (r''/r')\,f_x}{r'^2}.
+  \partial_r f\big|_i = \frac{h_-^2\,f_{i+1} - (h_+^2 - h_-^2)\,f_i - h_+^2\,f_{i-1}}
+                             {h_+\,h_-\,(h_+ + h_-)},
   ```
 
-  The `Grid` stores `r`, `drdx`, `d2rdx2` so the map is pluggable.
+  with $h_+ = r_{i+1}-r_i$, $h_- = r_i-r_{i-1}$; this reduces to
+  $(f_{i+1}-f_{i-1})/(2\Delta r)$ for a uniform grid.
 
 - **Angular.** A uniform, *staggered* grid in $\mu=\cos\theta$:
   $\mu_j = -1 + (j-\tfrac12)\,\Delta\mu$, $j=1,\dots,N_\mu$,
@@ -119,9 +122,10 @@ initial time slices supplied by the user are used only to *seed* $(\psi, v)$
 
 ### 1.3 Finite differences
 
-Second-order centered stencils in both $x$ and $\mu$ on the uniform
-coordinates, applied with `numpy` array slicing (no Python loops over grid
-points). The angular operator is discretized in flux form,
+Second-order centered stencils in both $r$ and $\mu$, applied with `numpy`
+array slicing (no Python loops over grid points). The radial stencils use the
+non-uniform Lagrange formula (§1.2), which reduces to the standard form on
+a uniform grid. The angular operator is discretized in flux form,
 $\partial_\mu[(1-\mu^2)\partial_\mu\psi]$, evaluating $(1-\mu^2)$ at cell faces
 $\mu_{j\pm1/2}$ for a compact, conservative stencil. Ghost width = **2** cells
 per side per direction (one is needed for the 2nd-order stencils, two to
@@ -156,9 +160,9 @@ $c_\mu=\sqrt{(1-\mu^2)/A}$ in $\mu$. With $\Delta r_{\rm local}=r'(x)\,\Delta x$
 \qquad \mathrm{CFL}\lesssim 0.5 .
 ```
 
-The radial bound is tightest near $r_\min$ (smallest $\Delta r$ on the log
-grid); the angular bound is tightest near the equator ($\mu=0$, where
-$c_\mu$ is largest).
+The radial cell width $\Delta r_{\rm local}$ is the average of the forward
+and backward spacing stored in `Grid.dr_cell`.  The angular bound is tightest
+near the equator ($\mu=0$, where $c_\mu$ is largest).
 
 ### 1.6 Dissipation (optional)
 
@@ -195,9 +199,10 @@ tests/
 
 Owns the discretization; knows nothing about the physics.
 
-- `__init__(self, rmin, rmax, Nmu, Nr, ghost=2, mapping="log")`
-  - builds uniform `x` (with ghosts) and `mu` (staggered in $[-1,1]$, with
-    ghosts); stores `r`, `drdx`, `d2rdx2`, `dx`, `dmu`; builds 2D meshes
+- `__init__(self, rmin=None, rmax=None, Nmu=None, Nr=None, ghost=2, M=1.0, r_array=None)`
+  - builds the radial cell array `r` (uniform by default; user-supplied if
+    `r_array` is given) with ghost-cell extensions; builds staggered `mu`
+    (in $[-1,1]$, with ghosts); stores `r`, `dr_cell`, `dmu`; builds 2D meshes
     `R`, `MU`.
 - `dr(f)`, `drr(f)` — first/second radial derivatives (apply the $r(x)$ map).
 - `angular(f)` — the Legendre operator $\partial_\mu[(1-\mu^2)\partial_\mu f]$
@@ -240,7 +245,8 @@ The user-facing driver.
   snapshots.
 - results held as attributes: `times`, `waveforms` (dict
   `{r_extract: array shape (Nt, Nmu)}`), optional `snapshots`.
-- `save(self, path)` — dump grid metadata + waveforms to `.npz`.
+- `save_waveforms(self, path)` — dump detector time series + metadata to a small `.npz` (kept long-term).
+- `save_snapshots(self, path)` — dump full-grid psi snapshots accumulated during `evolve()` (large, for checkpointing).
 
 ### 2.4 `Detector` / diagnostics (`diagnostics.py`)
 
@@ -291,19 +297,21 @@ frequencies. The dominant test case is $\ell=m=2$.
 
 Milestones, in order:
 
-1. **Grid + operators** — `Grid` with derivative and ghost-fill methods;
-   unit-test FD operators against analytic functions (expect 2nd-order
-   convergence).
-2. **RHS** — `TeukolskyRHS.rhs`; cross-check its coefficient arrays against
-   `scripts/check_equations.py` symbols at sample points.
-3. **Evolution** — RK4 driver + CFL + Sommerfeld/excision/pole BCs; verify a
-   pulse propagates and leaves cleanly through both boundaries.
+1. ✅ **Grid + operators** — `Grid` with derivative and ghost-fill methods;
+   unit-test FD operators against analytic functions (2nd-order convergence
+   verified; 11 tests in `tests/test_grid.py`).
+2. ✅ **RHS** — `TeukolskyRHS.rhs`; coefficient arrays cross-checked against
+   `scripts/check_equations.py` at sample points (16 tests in
+   `tests/test_equation.py`).
+3. ✅ **Evolution** — RK4 driver + CFL + Sommerfeld/excision/pole BCs; pulse
+   propagation verified via `scripts/run_example.py` (1D and 2D animations,
+   waveform extraction; 30 tests in `tests/test_evolve.py`).
 4. **Validation** — Schwarzschild ($a=0$) ringdown: extract $\ell=m=2$ QNM
    frequency and compare to the known value ($M\omega \approx 0.3737 - 0.0890\,i$);
    self-convergence test in $N_r$, $N_\mu$.
 5. **Kerr** — repeat for $a\neq0$; confirm QNM frequencies vs. published tables;
    validate the pole-parity factor (§1.4) here.
-6. **Polish** — snapshot I/O, `run_example.py`, docs.
+6. **Polish** — snapshot I/O, docs.
 
 ## 5. Notes
 

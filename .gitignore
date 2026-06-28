@@ -7,3 +7,8 @@ __pycache__/
 
 # Editor / IDE
 .vscode/
+
+# run_example.py output files
+*.gif
+*.npz
+*_static.png

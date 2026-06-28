@@ -1,8 +1,16 @@
 """
 Grid: coordinates, finite-difference operators, and ghost-cell fills.
 
-Radial coordinate: uniform x with map r = M * exp(x), so
-  drdx = r, d2rdx2 = r.
+The radial grid is defined by interior cell-centre positions stored in
+``self.r``.  By default they are uniformly spaced (``rmin``, ``rmax``,
+``Nr`` required); any monotonically increasing sequence may be supplied
+instead via the ``r_array`` keyword.  Ghost cells are appended on both
+sides using the local boundary spacing.
+
+All FD operators (``dr``, ``drr``) use 2nd-order formulas for general
+non-uniform r-spacing; they reduce to the standard uniform-spacing formulas
+when the grid happens to be uniform.
+
 Angular coordinate: staggered uniform mu = cos(theta) in (-1, 1),
   mu_j = -1 + (j - 0.5) * dmu, j = 1..Nmu.
 
@@ -13,94 +21,166 @@ import numpy as np
 
 
 class Grid:
-    def __init__(self, rmin, rmax, Nmu, Nr, ghost=2, M=1.0):
+    def __init__(self, rmin=None, rmax=None, Nmu=None, Nr=None, ghost=2,
+                 M=1.0, r_array=None):
         """
         Parameters
         ----------
-        rmin, rmax : physical radial extent (rmin < r_horizon for excision)
-        Nmu        : number of interior angular cells
-        Nr         : number of interior radial cells
-        ghost      : ghost-cell width (default 2)
-        M          : mass parameter for the log map r = M * exp(x)
+        rmin, rmax : float, optional
+            Physical radial extent.  Required when ``r_array`` is None.
+        Nmu        : int
+            Number of interior angular cells (required).
+        Nr         : int, optional
+            Number of interior radial cells.  Required when ``r_array`` is None.
+        ghost      : int
+            Ghost-cell width (default 2).
+        M          : float
+            Black-hole mass (used in physics coefficients, not grid spacing).
+        r_array    : array_like, optional
+            Interior radial cell-centre positions.  When provided, rmin/rmax/Nr
+            are inferred from it and the grid may be non-uniform.
+            When None (default) a uniform grid is built from rmin/rmax/Nr.
         """
+        if Nmu is None:
+            raise ValueError("Nmu is required")
         self.ghost = ghost
-        self.Nr = Nr
-        self.Nmu = Nmu
-        self.M = M
+        self.Nmu   = Nmu
+        self.M     = M
 
-        # --- radial coordinate (log map r = M exp(x)) ---
-        xmin = np.log(rmin / M)
-        xmax = np.log(rmax / M)
-        self.dx = (xmax - xmin) / Nr
-
-        # x array including ghosts: Nr + 2*ghost cells
         g = ghost
-        x_int = np.linspace(xmin + 0.5 * self.dx, xmax - 0.5 * self.dx, Nr)
-        x_lo = x_int[0] - np.arange(g, 0, -1) * self.dx
-        x_hi = x_int[-1] + np.arange(1, g + 1) * self.dx
-        self._x = np.concatenate([x_lo, x_int, x_hi])
 
-        self.r = M * np.exp(self._x)      # shape (Nr + 2g,)
-        self.drdx = self.r                 # dr/dx = r for log map
-        self.d2rdx2 = self.r               # d^2r/dx^2 = r for log map
+        # --- radial coordinate ---
+        if r_array is not None:
+            r_int   = np.asarray(r_array, dtype=float)
+            self.Nr = len(r_int)
+        else:
+            if rmin is None or rmax is None or Nr is None:
+                raise ValueError("rmin, rmax, Nr are required when r_array is not given")
+            self.Nr = Nr
+            dr_u    = (rmax - rmin) / Nr
+            r_int   = np.linspace(rmin + 0.5 * dr_u, rmax - 0.5 * dr_u, Nr)
+
+        # Ghost cells: extend using local boundary spacing so the FD stencils
+        # near the boundary remain well-conditioned.
+        dr_lo = r_int[1] - r_int[0]        # spacing at left boundary
+        dr_hi = r_int[-1] - r_int[-2]      # spacing at right boundary
+        r_lo  = r_int[0]  - np.arange(g, 0, -1) * dr_lo
+        r_hi  = r_int[-1] + np.arange(1, g + 1) * dr_hi
+        self.r = np.concatenate([r_lo, r_int, r_hi])
+
+        # Interior cell widths (h+ + h-)/2, used by the CFL condition.
+        # For a uniform grid this equals the cell spacing dr.
+        self.dr_cell = 0.5 * (self.r[g + 1 : g + self.Nr + 1]
+                             - self.r[g - 1 : g + self.Nr - 1])  # shape (Nr,)
+
+        # Effective local spacing for the radial KO 5-point stencil:
+        # 0.25*(r[i+2] - r[i-2]) → equals dr on a uniform grid.
+        self._ko_h_r = 0.25 * (self.r[4:] - self.r[:-4])  # shape (N-4,)
 
         # --- angular coordinate (staggered, uniform in mu) ---
-        self.dmu = 2.0 / Nmu
-        mu_int = -1.0 + (np.arange(1, Nmu + 1) - 0.5) * self.dmu
-        mu_lo = mu_int[0] - np.arange(g, 0, -1) * self.dmu
-        mu_hi = mu_int[-1] + np.arange(1, g + 1) * self.dmu
-        self._mu = np.concatenate([mu_lo, mu_int, mu_hi])
+        self.dmu   = 2.0 / Nmu
+        mu_int     = -1.0 + (np.arange(1, Nmu + 1) - 0.5) * self.dmu
+        mu_lo      = mu_int[0]  - np.arange(g, 0, -1) * self.dmu
+        mu_hi      = mu_int[-1] + np.arange(1, g + 1) * self.dmu
+        self._mu   = np.concatenate([mu_lo, mu_int, mu_hi])
 
         # 2D meshes (angular index along axis 0, radial along axis 1)
         self.MU, self.R = np.meshgrid(self._mu, self.r, indexing='ij')
 
         # Slice selecting interior (non-ghost) cells
-        self.interior = (slice(g, g + Nmu), slice(g, g + Nr))
+        self.interior = (slice(g, g + Nmu), slice(g, g + self.Nr))
 
     @property
     def shape(self):
         return (self.Nmu + 2 * self.ghost, self.Nr + 2 * self.ghost)
 
     # ------------------------------------------------------------------
-    # Finite-difference operators
+    # Finite-difference operators — non-uniform r-spacing
     # ------------------------------------------------------------------
 
     def dr(self, f):
-        """First radial derivative d/dr f, using d/dr = (1/drdx) d/dx."""
-        g = self.ghost
-        fx = np.empty_like(f)
-        # Second-order centered difference in x for interior + 1 ghost band
-        fx[:, 1:-1] = (f[:, 2:] - f[:, :-2]) / (2.0 * self.dx)
-        # One-sided at boundaries (needed for outermost ghost only)
-        fx[:, 0] = (-3 * f[:, 0] + 4 * f[:, 1] - f[:, 2]) / (2.0 * self.dx)
-        fx[:, -1] = (3 * f[:, -1] - 4 * f[:, -2] + f[:, -3]) / (2.0 * self.dx)
-        return fx / self.drdx[np.newaxis, :]
+        """First radial derivative d/dr f (2nd-order, non-uniform spacing).
+
+        Centered formula at all internal column positions; 3-point one-sided
+        Lagrange formula at the two outermost columns (ghost cells only).
+        """
+        r = self.r
+        h_plus  = r[2:] - r[1:-1]    # r[i+1] - r[i], shape (N-2,)
+        h_minus = r[1:-1] - r[:-2]   # r[i]   - r[i-1]
+
+        df = np.empty_like(f)
+
+        df[:, 1:-1] = (
+            h_minus**2 * f[:, 2:]
+            - (h_plus**2 - h_minus**2) * f[:, 1:-1]
+            - h_plus**2 * f[:, :-2]
+        ) / (h_plus * h_minus * (h_plus + h_minus))
+
+        # Left edge: one-sided using columns 0, 1, 2
+        h1 = r[1] - r[0];  h2 = r[2] - r[0]
+        df[:, 0] = (
+            -f[:, 0] * (h1 + h2) / (h1 * h2)
+            + f[:, 1] * h2 / (h1 * (h2 - h1))
+            - f[:, 2] * h1 / (h2 * (h2 - h1))
+        )
+
+        # Right edge: one-sided using columns -3, -2, -1
+        hm1 = r[-2] - r[-3];  hm2 = r[-1] - r[-3]
+        df[:, -1] = (
+            f[:, -3] * (hm2 - hm1) / (hm1 * hm2)
+            - f[:, -2] * hm2 / (hm1 * (hm2 - hm1))
+            + f[:, -1] * (2 * hm2 - hm1) / (hm2 * (hm2 - hm1))
+        )
+
+        return df
 
     def drr(self, f):
-        """Second radial derivative d^2/dr^2 f.
+        """Second radial derivative d^2/dr^2 f (2nd-order, non-uniform spacing).
 
-        d^2f/dr^2 = (f_xx - (d2rdx2/drdx) f_x) / drdx^2
-        For the log map drdx = d2rdx2 = r, so (d2rdx2/drdx) = 1.
+        Centered formula at all internal column positions; 3-point Lagrange
+        formula at the two outermost columns (ghost cells only).
         """
-        g = self.ghost
-        fxx = np.empty_like(f)
-        fxx[:, 1:-1] = (f[:, 2:] - 2 * f[:, 1:-1] + f[:, :-2]) / self.dx**2
-        fxx[:, 0] = (2 * f[:, 0] - 5 * f[:, 1] + 4 * f[:, 2] - f[:, 3]) / self.dx**2
-        fxx[:, -1] = (2 * f[:, -1] - 5 * f[:, -2] + 4 * f[:, -3] - f[:, -4]) / self.dx**2
-        fx = self.dr(f) * self.drdx[np.newaxis, :]   # recover f_x = drdx * f_r
-        ratio = self.d2rdx2 / self.drdx               # = 1 for log map
-        return (fxx - ratio[np.newaxis, :] * fx) / self.drdx[np.newaxis, :]**2
+        r = self.r
+        h_plus  = r[2:] - r[1:-1]
+        h_minus = r[1:-1] - r[:-2]
+
+        d2f = np.empty_like(f)
+
+        d2f[:, 1:-1] = (
+            2.0 * (h_minus * f[:, 2:]
+                   - (h_plus + h_minus) * f[:, 1:-1]
+                   + h_plus * f[:, :-2])
+            / (h_plus * h_minus * (h_plus + h_minus))
+        )
+
+        # Left edge: Lagrange 2nd derivative using columns 0, 1, 2
+        h1 = r[1] - r[0];  h2 = r[2] - r[0]
+        d2f[:, 0] = 2.0 * (
+            f[:, 0] / (h1 * h2)
+            - f[:, 1] / (h1 * (h2 - h1))
+            + f[:, 2] / (h2 * (h2 - h1))
+        )
+
+        # Right edge: Lagrange 2nd derivative using columns -3, -2, -1
+        hm1 = r[-2] - r[-3];  hm2 = r[-1] - r[-3]
+        d2f[:, -1] = 2.0 * (
+            f[:, -3] / (hm1 * hm2)
+            - f[:, -2] / (hm1 * (hm2 - hm1))
+            + f[:, -1] / (hm2 * (hm2 - hm1))
+        )
+
+        return d2f
 
     def angular(self, f):
         """Legendre operator d/dmu[(1-mu^2) d/dmu f], flux form.
 
         (1-mu^2) is evaluated at cell faces mu_{j+1/2} = mu_j + dmu/2.
         """
-        mu = self._mu
+        mu  = self._mu
         dmu = self.dmu
         # Face values of (1 - mu^2) between cells j and j+1
         mu_face = mu[:-1] + 0.5 * dmu          # shape (Nmu+2g-1,)
-        w_face = 1.0 - mu_face**2
+        w_face  = 1.0 - mu_face**2
 
         # Flux at each face: F_{j+1/2} = (1-mu_{j+1/2}^2) * (f_{j+1} - f_j)/dmu
         F = w_face[:, np.newaxis] * (f[1:, :] - f[:-1, :]) / dmu
@@ -108,8 +188,8 @@ class Grid:
         # Divergence: (F_{j+1/2} - F_{j-1/2}) / dmu
         result = np.empty_like(f)
         result[1:-1, :] = (F[1:, :] - F[:-1, :]) / dmu
-        # Boundary rows: one-sided (only needed inside ghost region, filled separately)
-        result[0, :] = result[1, :]
+        # Boundary rows: one-sided (only used inside ghost region, filled separately)
+        result[0, :]  = result[1, :]
         result[-1, :] = result[-2, :]
         return result
 
@@ -118,25 +198,24 @@ class Grid:
     # ------------------------------------------------------------------
 
     def fill_ghosts_r(self, f, outer="sommerfeld", dt=None):
-        """Fill radial ghost cells.
+        """Fill radial ghost cells by 2nd-order polynomial extrapolation.
 
-        Inner (excision): 2nd-order extrapolation from interior.
-        Outer (Sommerfeld): d_t psi ~ -d_r psi - psi/r (approximate outgoing).
-          When outer='extrapolate' or dt is None, uses 2nd-order extrapolation.
+        Inner (excision) and outer ghosts are filled from the nearest 3
+        interior cells.  Extrapolation is exact for functions quadratic in
+        the cell index (i.e. quadratic in r for a uniform grid).
         """
         g = self.ghost
-
-        # Inner ghosts: extrapolate from interior
-        # ghost at g-1: use interior[g], g+1, g+2
-        f[:, g - 1] = 3 * f[:, g] - 3 * f[:, g + 1] + f[:, g + 2]
-        if g >= 2:
-            f[:, g - 2] = 3 * f[:, g - 1] - 3 * f[:, g] + f[:, g + 1]
-
-        # Outer ghosts: extrapolate (Sommerfeld applied in RHS, not here)
         n = self.Nr + g   # index of last interior cell
-        f[:, n] = 3 * f[:, n - 1] - 3 * f[:, n - 2] + f[:, n - 3]
+
+        # Inner ghosts
+        f[:, g - 1] = 3 * f[:, g]     - 3 * f[:, g + 1] + f[:, g + 2]
         if g >= 2:
-            f[:, n + 1] = 3 * f[:, n] - 3 * f[:, n - 1] + f[:, n - 2]
+            f[:, g - 2] = 3 * f[:, g - 1] - 3 * f[:, g]     + f[:, g + 1]
+
+        # Outer ghosts
+        f[:, n]     = 3 * f[:, n - 1] - 3 * f[:, n - 2] + f[:, n - 3]
+        if g >= 2:
+            f[:, n + 1] = 3 * f[:, n]     - 3 * f[:, n - 1] + f[:, n - 2]
 
         return f
 
@@ -150,11 +229,9 @@ class Grid:
         g = self.ghost
         n = self.Nmu + g   # first northern ghost index
 
-        # South-pole ghosts: mu < -1
         for k in range(g):
             f[g - 1 - k, :] = parity * f[g + k, :]
 
-        # North-pole ghosts: mu > +1
         for k in range(g):
             f[n + k, :] = parity * f[n - 1 - k, :]
 
@@ -165,12 +242,16 @@ class Grid:
     # ------------------------------------------------------------------
 
     def ko_dissipation_r(self, f, epsilon):
-        """KO dissipation in radial direction: -eps/16 * fourth difference."""
+        """KO dissipation in radial direction.
+
+        Uses the local effective spacing (precomputed at construction) so the
+        formula is consistent for non-uniform grids.
+        """
         Q = np.zeros_like(f)
         Q[:, 2:-2] = -(epsilon / 16.0) * (
             f[:, :-4] - 4 * f[:, 1:-3] + 6 * f[:, 2:-2]
             - 4 * f[:, 3:-1] + f[:, 4:]
-        ) / self.dx
+        ) / self._ko_h_r
         return Q
 
     def ko_dissipation_mu(self, f, epsilon):

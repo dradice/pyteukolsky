@@ -18,16 +18,18 @@ The repository contains:
 - `scripts/check_equations.py` — symbolic verification of the equations.
 - `README.md` — formalism summary, the mode equation, and the full
   implementation plan. **Consult it before starting any new milestone.**
-- `pyteukolsky/` — the solver package (milestones 1–2 complete; see below).
+- `pyteukolsky/` — the solver package (milestones 1–3 complete; see below).
+- `scripts/run_example.py` — end-to-end pulse demo (produces static PNG, 1D/2D GIFs, waveform .npz).
 - `tests/` — pytest unit tests for every completed milestone.
 
 The chosen scheme is method-of-lines (first-order-in-time reduction with
 `v = psi_t`, so the mixed `psi_tr` term becomes an explicit spatial derivative
-`v_r`) integrated with RK4, on a log-stretched radial grid and a staggered
-grid in `mu = cos(theta)`. In `mu` the angular operator is the Legendre
-operator `d/dmu[(1-mu^2) d/dmu]` and the potential is
-`(2 mu - m)^2/(1-mu^2) - 2`; all coefficients become rational in `mu` (no trig).
-This substitution is verified by CHECK 3 in scripts/check_equations.py.
+`v_r`) integrated with RK4, on a uniform radial grid (non-uniform also
+supported via `r_array`) and a staggered grid in `mu = cos(theta)`. In `mu`
+the angular operator is the Legendre operator `d/dmu[(1-mu^2) d/dmu]` and the
+potential is `(2 mu - m)^2/(1-mu^2) - 2`; all coefficients become rational in
+`mu` (no trig). This substitution is verified by CHECK 3 in
+scripts/check_equations.py.
 
 ## Implementation status
 
@@ -35,13 +37,18 @@ This substitution is verified by CHECK 3 in scripts/check_equations.py.
 
 **Milestone 1 — `pyteukolsky/grid.py` (`Grid`)**
 Coordinates, finite-difference operators, and ghost fills.
-- Log-stretched radial grid `r = M exp(x)`; staggered angular grid `mu_j = -1 + (j-½)Δμ`.
-- `dr(f)`, `drr(f)` — 2nd-order centered FD in `x`, chain-ruled to `r`.
+- Radial grid: uniform by default (`rmin`, `rmax`, `Nr`); accepts any
+  monotone array via `r_array`. Ghost cells extend using local boundary
+  spacing. Staggered angular grid `mu_j = -1 + (j-½)Δμ`.
+- `dr(f)`, `drr(f)` — 2nd-order non-uniform-spacing Lagrange formulas in `r`
+  (reduce to standard centered stencils on a uniform grid).
 - `angular(f)` — Legendre operator `d/dmu[(1-mu^2) d/dmu f]` in flux form.
 - `fill_ghosts_r(f)` — 2nd-order extrapolation at inner (excision) and outer boundaries.
 - `fill_ghosts_mu(f, parity)` — pole reflection with sign `(-1)**m`.
-- `ko_dissipation_r/mu(f, epsilon)` — Kreiss–Oliger 4th-difference dissipation.
-- Tests: `tests/test_grid.py` (10 tests, all 2nd-order convergence verified).
+- `ko_dissipation_r/mu(f, epsilon)` — Kreiss–Oliger 4th-difference dissipation
+  (radial version uses local cell spacing via precomputed `_ko_h_r`).
+- `dr_cell` — interior cell widths `(Nr,)`, used by the CFL condition.
+- Tests: `tests/test_grid.py` (11 tests, all 2nd-order convergence verified).
 
 **Milestone 2 — `pyteukolsky/equation.py` (`TeukolskyRHS`)**
 Precomputed PDE coefficients and the `rhs(psi, v)` method.
@@ -52,14 +59,34 @@ Precomputed PDE coefficients and the `rhs(psi, v)` method.
 - Tests: `tests/test_equation.py` (16 tests; coefficients cross-checked against
   `scripts/check_equations.py` at sample interior points).
 
+**Milestone 3 — `pyteukolsky/evolve.py` (`Evolution`)**
+RK4 time driver, CFL timestep, detector waveform extraction, snapshot I/O.
+- `cfl_dt(cfl)` — CFL-limited timestep using `g.dr_cell` for radial width and
+  `sqrt(Delta/A)`, `sqrt((1-mu^2)/A)` for characteristic speeds.
+- `step(dt)` — one RK4 step of `(psi, v)`.
+- `evolve(t_final, dt, snapshot_every)` — main loop with waveform recording.
+- `add_detector(r_extract)` — linear interpolation to extraction radius.
+- `save_waveforms(path)` / `save_snapshots(path)` — separate `.npz` files
+  (waveforms are small/long-lived; snapshots are large/checkpoint-style).
+- Tests: `tests/test_evolve.py` (30 tests).
+
+**`scripts/run_example.py`**
+End-to-end demonstration: time-symmetric 2D Gaussian pulse on a uniform r
+grid, evolved and saved as static figure + 1D/2D GIF animations + waveforms.
+- `run_simulation(args)` — sets up grid, initial data `(psi0, v=0)`, evolves,
+  returns pre-computed `r·Re[ψ_m]` snapshots.
+- `make_static_figure`, `make_animation_1d`, `make_animation_2d` — separate
+  visualization functions outside `main()`.
+- Initial data: 2D Gaussian `exp(-((r-r0)/σ_r)²) * exp(-(μ/σ_μ)²)` with
+  `σ_μ=0.3` to suppress the near-pole singularity of `V = (2μ-m)²/(1-μ²)-2`.
+- Plots `r·Re[ψ_m]` (not `ψ_m`) to remove the 1/r fall-off.
+
 ### Pending
 
-- **Milestone 3** — `pyteukolsky/evolve.py` (`Evolution`): RK4 driver, CFL timestep,
-  Sommerfeld outer BC, detector registration.
 - **Milestone 4** — Validation: Schwarzschild (`a=0`) `ℓ=m=2` ringdown, QNM frequency
   `Mω ≈ 0.3737 − 0.0890i`, self-convergence tests.
 - **Milestone 5** — Kerr (`a≠0`): QNM vs. published tables, validate pole parity.
-- **Milestone 6** — Polish: snapshot I/O, `run_example.py`, docs.
+- **Milestone 6** — Polish: docs.
 
 ## Commands
 
