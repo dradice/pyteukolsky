@@ -1,2 +1,9 @@
 # Source paper from arXiv — not redistributable, keep local only
 ks6.tex
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Editor / IDE
+.vscode/
