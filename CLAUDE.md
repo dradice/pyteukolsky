@@ -24,8 +24,8 @@ The repository contains:
 
 The chosen scheme is method-of-lines (first-order-in-time reduction with
 `v = psi_t`, so the mixed `psi_tr` term becomes an explicit spatial derivative
-`v_r`) integrated with RK4, on a uniform radial grid (non-uniform also
-supported via `r_array`) and a staggered grid in `mu = cos(theta)`. In `mu`
+`v_r`) integrated with RK4, on a logarithmically stretched radial grid
+(uniform in `x` with `r = M exp(x)`) and a staggered grid in `mu = cos(theta)`. In `mu`
 the angular operator is the Legendre operator `d/dmu[(1-mu^2) d/dmu]` and the
 potential is `(2 mu - m)^2/(1-mu^2) - 2`; all coefficients become rational in
 `mu` (no trig). This substitution is verified by CHECK 3 in
@@ -37,17 +37,17 @@ scripts/check_equations.py.
 
 **Milestone 1 — `pyteukolsky/grid.py` (`Grid`)**
 Coordinates, finite-difference operators, and ghost fills.
-- Radial grid: uniform by default (`rmin`, `rmax`, `Nr`); accepts any
-  monotone array via `r_array`. Ghost cells extend using local boundary
-  spacing. Staggered angular grid `mu_j = -1 + (j-½)Δμ`.
-- `dr(f)`, `drr(f)` — 2nd-order non-uniform-spacing Lagrange formulas in `r`
-  (reduce to standard centered stencils on a uniform grid).
+- Radial grid: uniform in `x` with the log map `r = M exp(x)` (`rmin`, `rmax`,
+  `Nr`), giving geometric stretching in `r`. Exposes `dx`, `drdx = r`,
+  `d2rdx2 = r`. Staggered angular grid `mu_j = -1 + (j-½)Δμ`.
+- `dr(f)`, `drr(f)` — 2nd-order centered stencils in `x` mapped to `r` via the
+  chain rule (`d/dr = (1/r) d/dx`).
 - `angular(f)` — Legendre operator `d/dmu[(1-mu^2) d/dmu f]` in flux form.
 - `fill_ghosts_r(f)` — 2nd-order extrapolation at inner (excision) and outer boundaries.
 - `fill_ghosts_mu(f, parity)` — pole reflection with sign `(-1)**m`.
 - `ko_dissipation_r/mu(f, epsilon)` — Kreiss–Oliger 4th-difference dissipation
-  (radial version uses local cell spacing via precomputed `_ko_h_r`).
-- `dr_cell` — interior cell widths `(Nr,)`, used by the CFL condition.
+  (radial version divides by `dx`).
+- `dr_cell` — physical radial cell width `r·dx`, shape `(Nr,)`, used by the CFL condition.
 - Tests: `tests/test_grid.py` (11 tests, all 2nd-order convergence verified).
 
 **Milestone 2 — `pyteukolsky/equation.py` (`TeukolskyRHS`)**
@@ -71,7 +71,7 @@ RK4 time driver, CFL timestep, detector waveform extraction, snapshot I/O.
 - Tests: `tests/test_evolve.py` (30 tests).
 
 **`scripts/run_example.py`**
-End-to-end demonstration: time-symmetric 2D Gaussian pulse on a uniform r
+End-to-end demonstration: time-symmetric 2D Gaussian pulse on the log r
 grid, evolved and saved as static figure + 1D/2D GIF animations + waveforms.
 - `run_simulation(args)` — sets up grid, initial data `(psi0, v=0)`, evolves,
   returns pre-computed `r·Re[ψ_m]` snapshots.

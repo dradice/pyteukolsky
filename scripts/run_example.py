@@ -2,7 +2,8 @@
 run_example.py — Gaussian pulse evolution with the Teukolsky solver.
 
 Evolves an m=2 (default) time-symmetric Gaussian pulse in Schwarzschild
-(a=0, default) on a uniform radial grid and produces three output files:
+(a=0, default) on a logarithmically stretched radial grid and produces
+the following output files:
 
   <stem>_static.png — multi-time equatorial slice comparison
   <stem>_1d.gif     — animation of r Re[ψ_m] at θ = π/2 vs r
@@ -38,7 +39,7 @@ from pyteukolsky import Evolution, Grid, TeukolskyRHS
 def parse_args():
     p = argparse.ArgumentParser(description="Teukolsky Gaussian pulse example")
     p.add_argument("--Nr",       type=int,   default=200,
-                   help="radial interior cells  (default 200, uniform grid)")
+                   help="radial interior cells  (default 200, log grid)")
     p.add_argument("--Nmu",      type=int,   default=32,
                    help="angular interior cells (default 32)")
     p.add_argument("--rmin",     type=float, default=1.5,

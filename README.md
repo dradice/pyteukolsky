@@ -96,21 +96,20 @@ initial time slices supplied by the user are used only to *seed* $(\psi, v)$
 
 ### 1.2 Spatial grid
 
-- **Radial.** The grid stores cell-centre positions `r` directly.  By default
-  they are uniformly spaced from $r_\min$ to $r_\max$ with $N_r$ cells; an
-  arbitrary monotone sequence may be supplied via `r_array`.  The domain runs
-  from $r_\min$ *inside* the horizon $r_+ = M+\sqrt{M^2-a^2}$ to a large
-  $r_\max$.  Ghost cells at both ends extend the array using the local boundary
-  spacing, keeping FD stencils well-conditioned.  Radial FD operators use
-  2nd-order formulas for general non-uniform spacing:
+- **Radial.** A uniform grid in $x$ mapped to $r$ by the logarithmic map
+  $r = M\,e^{x}$, so cells are stretched geometrically in $r$: fine near the
+  horizon, coarse in the far zone.  The grid is built from $r_\min$, $r_\max$,
+  $N_r$; it stores $\Delta x$ and the map derivatives $r'(x)=r''(x)=r$.  The
+  domain runs from $r_\min$ *inside* the horizon $r_+ = M+\sqrt{M^2-a^2}$ to a
+  large $r_\max$.  Ghost cells at both ends extend the uniform-$x$ array.
+  Radial derivatives are taken with 2nd-order centered stencils in $x$ and
+  mapped to $r$ by the chain rule:
 
   ```math
-  \partial_r f\big|_i = \frac{h_-^2\,f_{i+1} - (h_+^2 - h_-^2)\,f_i - h_+^2\,f_{i-1}}
-                             {h_+\,h_-\,(h_+ + h_-)},
+  \partial_r f = \frac{1}{r'(x)}\,\partial_x f,
+  \qquad
+  \partial_x f\big|_i = \frac{f_{i+1}-f_{i-1}}{2\,\Delta x}.
   ```
-
-  with $h_+ = r_{i+1}-r_i$, $h_- = r_i-r_{i-1}$; this reduces to
-  $(f_{i+1}-f_{i-1})/(2\Delta r)$ for a uniform grid.
 
 - **Angular.** A uniform, *staggered* grid in $\mu=\cos\theta$:
   $\mu_j = -1 + (j-\tfrac12)\,\Delta\mu$, $j=1,\dots,N_\mu$,
@@ -122,10 +121,10 @@ initial time slices supplied by the user are used only to *seed* $(\psi, v)$
 
 ### 1.3 Finite differences
 
-Second-order centered stencils in both $r$ and $\mu$, applied with `numpy`
-array slicing (no Python loops over grid points). The radial stencils use the
-non-uniform Lagrange formula (§1.2), which reduces to the standard form on
-a uniform grid. The angular operator is discretized in flux form,
+Second-order centered stencils in both $x$ and $\mu$, applied with `numpy`
+array slicing (no Python loops over grid points). The radial stencils are taken
+in the uniform coordinate $x$ and mapped to $r$ by the chain rule (§1.2). The
+angular operator is discretized in flux form,
 $\partial_\mu[(1-\mu^2)\partial_\mu\psi]$, evaluating $(1-\mu^2)$ at cell faces
 $\mu_{j\pm1/2}$ for a compact, conservative stencil. Ghost width = **2** cells
 per side per direction (one is needed for the 2nd-order stencils, two to
@@ -160,8 +159,8 @@ $c_\mu=\sqrt{(1-\mu^2)/A}$ in $\mu$. With $\Delta r_{\rm local}=r'(x)\,\Delta x$
 \qquad \mathrm{CFL}\lesssim 0.5 .
 ```
 
-The radial cell width $\Delta r_{\rm local}$ is the average of the forward
-and backward spacing stored in `Grid.dr_cell`.  The angular bound is tightest
+The radial cell width $\Delta r_{\rm local}=r'(x)\,\Delta x = r\,\Delta x$ is
+stored in `Grid.dr_cell`.  The angular bound is tightest
 near the equator ($\mu=0$, where $c_\mu$ is largest).
 
 ### 1.6 Dissipation (optional)
@@ -199,11 +198,11 @@ tests/
 
 Owns the discretization; knows nothing about the physics.
 
-- `__init__(self, rmin=None, rmax=None, Nmu=None, Nr=None, ghost=2, M=1.0, r_array=None)`
-  - builds the radial cell array `r` (uniform by default; user-supplied if
-    `r_array` is given) with ghost-cell extensions; builds staggered `mu`
-    (in $[-1,1]$, with ghosts); stores `r`, `dr_cell`, `dmu`; builds 2D meshes
-    `R`, `MU`.
+- `__init__(self, rmin, rmax, Nmu, Nr, ghost=2, M=1.0)`
+  - builds the radial cell array `r` from the log map $r = M\,e^{x}$ (uniform in
+    $x$) with ghost-cell extensions; builds staggered `mu`
+    (in $[-1,1]$, with ghosts); stores `r`, `dx`, `drdx`, `d2rdx2`, `dr_cell`,
+    `dmu`; builds 2D meshes `R`, `MU`.
 - `dr(f)`, `drr(f)` — first/second radial derivatives (apply the $r(x)$ map).
 - `angular(f)` — the Legendre operator $\partial_\mu[(1-\mu^2)\partial_\mu f]$
   (flux form, $(1-\mu^2)$ at cell faces).

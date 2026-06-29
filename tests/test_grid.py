@@ -160,12 +160,13 @@ def test_fill_ghosts_mu_odd_parity():
 def test_fill_ghosts_r_inner_extrapolation():
     """Inner ghost cells should be filled by 2nd-order extrapolation.
 
-    The stencil extrapolates quadratically in the cell index, which is exact
-    for polynomials quadratic in r on a uniform grid.
+    The stencil is exact for polynomials in x (not r), so we test with f = x^2.
     """
     g = make_grid(50, 32)
     gh = g.ghost
-    f = g.R**2          # quadratic in r → extrapolation exact for uniform grid
+    # x is the uniform radial coordinate: x = log(r/M)
+    x = np.log(g.R / g.M)
+    f = x**2  # quadratic in x -> 2nd-order extrapolation is exact
     expected = f.copy()
     f[:, :gh] = 0.0
     g.fill_ghosts_r(f)
@@ -191,24 +192,11 @@ def test_staggered_mu_in_interior():
     assert np.all(mu_int > -1.0) and np.all(mu_int < 1.0)
 
 
-def test_uniform_grid_r():
-    """Default grid is uniform: interior r values span [rmin, rmax] uniformly."""
-    Nr, Nmu = 50, 32
-    rmin, rmax = 2.0, 100.0
-    g = make_grid(Nr, Nmu, rmin=rmin, rmax=rmax)
-    r_int = g.r[g.ghost : g.ghost + g.Nr]
-    dr = (rmax - rmin) / Nr
-    expected = np.linspace(rmin + 0.5 * dr, rmax - 0.5 * dr, Nr)
-    assert np.allclose(r_int, expected)
-
-
-def test_custom_r_array():
-    """A user-supplied r_array is stored as the interior r values."""
-    r_custom = np.geomspace(2.0, 100.0, 40)   # log-spaced (non-uniform)
-    g = Grid(Nmu=16, ghost=2, M=1.0, r_array=r_custom)
-    r_int = g.r[g.ghost : g.ghost + g.Nr]
-    assert np.allclose(r_int, r_custom)
-    assert g.Nr == len(r_custom)
+def test_log_map():
+    """r = M exp(x), so drdx = r and d2rdx2 = r."""
+    g = make_grid(50, 32, M=1.0)
+    assert np.allclose(g.drdx, g.r)
+    assert np.allclose(g.d2rdx2, g.r)
 
 
 if __name__ == "__main__":
