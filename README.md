@@ -142,10 +142,9 @@ support Kreiss–Oliger dissipation, §1.6).
   physics of interest. (Exact at large $r$ only; documented as approximate.)
 - **Poles ($\mu=\pm1$).** Fill angular ghost cells by reflection across the
   pole with a parity factor $p$: $\psi(\mu_{\rm ghost}) = p\,\psi(\mu_{\rm mirror})$.
-  For a spin-weight $s=-2$, azimuthal-$m$ field the parity is
-  $p=(-1)^{m}$ — **to be validated** against a known solution / the regularity
-  exponent of $_{-2}Y_{\ell m}$; the staggered grid makes the choice a property
-  of the ghost fill only.
+  For a spin-weight $s=-2$, azimuthal-$m$ field the parity is $p=(-1)^{m}$;
+  the staggered grid makes the choice a property of the ghost fill only.
+  This parity is confirmed correct for Schwarzschild $\ell=m=2$ (Milestone 4).
 
 ### 1.5 Time integration & stability
 
@@ -181,17 +180,21 @@ A small package (it can collapse to a single `teukolsky.py` if preferred):
 
 ```
 pyteukolsky/
-  __init__.py        # exports Grid, TeukolskyRHS, Evolution
+  __init__.py        # exports Grid, TeukolskyRHS, Evolution,
+                     #         swsh, gaussian_pulse, project_swsh, fit_qnm_frequency
   grid.py            # Grid: coordinates, FD operators, ghost fills
   equation.py        # TeukolskyRHS: precomputed coefficients + rhs()
   evolve.py          # Evolution: state, time stepping, run loop
-  diagnostics.py     # Detector: extraction-radius time series, SWSH projection
-  initialdata.py     # helpers: gaussian_pulse, swsh, seed-from-two-slices
+  initialdata.py     # swsh(), gaussian_pulse()
+  diagnostics.py     # project_swsh(), fit_qnm_frequency()
 scripts/
   check_equations.py # (exists) symbolic verification — source of truth
   run_example.py     # end-to-end demo: ringdown of a Gaussian pulse
 tests/
-  test_*.py          # convergence, QNM frequency, regression
+  test_grid.py       # 11 tests: FD operators, 2nd-order convergence
+  test_equation.py   # 16 tests: coefficient arrays, rhs() linearity
+  test_evolve.py     # 30 tests: RK4 driver, CFL, detectors, I/O
+  test_validation.py # 12 tests: SWSH normalization, QNM frequency, self-convergence
 ```
 
 ### 2.1 `Grid` (`grid.py`)
@@ -247,50 +250,84 @@ The user-facing driver.
 - `save_waveforms(self, path)` — dump detector time series + metadata to a small `.npz` (kept long-term).
 - `save_snapshots(self, path)` — dump full-grid psi snapshots accumulated during `evolve()` (large, for checkpointing).
 
-### 2.4 `Detector` / diagnostics (`diagnostics.py`)
+### 2.4 Initial-data helpers (`initialdata.py`)
 
-- records $\psi_m(t, r_{\rm ext}, \mu)$ at each registered radius (radial
-  interpolation to $r_{\rm ext}$);
-- `project_swsh(mu_profile, ell, m, spin=-2)` — optionally collapse the
-  $\mu$ profile onto a spin-weighted spherical harmonic $_{-2}Y_{\ell m}$ via
-  Gauss–Legendre-style quadrature in $\mu$ to produce a single complex waveform
-  $\psi_{\ell m}(t)$ for ringdown analysis.
+- `swsh(spin, ell, m, mu)` — spin-weighted spherical harmonic $_{s}Y_{\ell m}(\mu)$
+  at $\varphi=0$, implemented analytically for $s=-2$, $\ell=2$ using Wigner
+  $d$-matrix elements:
+  $_{-2}Y_{2m}(\theta) = \sqrt{5/4\pi}\,d^2_{2,m}(\theta)$.
+  Returns a real array of the same shape as `mu`.
+- `gaussian_pulse(grid, r0, sigma_r, ell=2, m=2, spin=-2, sigma_mu=None, amplitude=1.0)` —
+  $\psi = A\,\exp\!\big(-((r-r_0)/\sigma_r)^2\big)\,{_{-2}Y_{\ell m}}(\mu)$.
+  For a time-symmetric start pass the result as both `psi0` and `psi1`
+  to `Evolution.set_initial_data` ($v=0$ exactly).
+  Optional `sigma_mu` adds $\exp(-(\mu/\sigma_\mu)^2)$ to suppress the field
+  near poles where $V=(2\mu-m)^2/(1-\mu^2)-2$ is large.
 
-### 2.5 Initial-data helpers (`initialdata.py`)
+### 2.5 Diagnostics (`diagnostics.py`)
 
-- `gaussian_pulse(grid, r0, sigma, ell=2, m=..., spin=-2, amplitude=1.0)` —
-  a Gaussian shell in $r$ times $_{-2}Y_{\ell m}(\mu)$; convenient default test data.
-- `swsh(spin, ell, m, mu)` — spin-weighted spherical harmonics as functions of
-  $\mu$ (for data construction and projection).
-- time-symmetric option: `psi0 = psi1` (zero initial velocity).
+- `project_swsh(psi_mu, mu, swsh_profile)` — project the $\mu$-profile of the
+  waveform at a detector onto a SWSH via midpoint-rule quadrature:
+  $\psi_{\ell m}(t) = \int_{-1}^{1} \psi_m(t,\mu)\,\overline{Y(\mu)}\,d\mu$.
+  Handles shape `(Nmu,)` or `(Nt, Nmu)` input; returns shape `()` or `(Nt,)`.
+- `fit_qnm_frequency(times, psi_t, t_start, t_end)` — extract $({\omega_R}, {\omega_I})$
+  from a waveform slice. For **real** signals (Schwarzschild) fits a damped
+  cosine $A\,e^{\omega_I t}\cos(\omega_R t + \phi)$ via `scipy.optimize.curve_fit`
+  with zero-crossing-rate and log-slope initial guesses. For **complex** signals
+  (Kerr / complex initial data) uses linear regression on $\log|\psi|$ and the
+  unwrapped phase. Returns $(\omega_R>0,\, \omega_I<0)$.
 
 ## 3. Public API and usage
 
 ```python
 from pyteukolsky import Grid, TeukolskyRHS, Evolution
-from pyteukolsky.initialdata import gaussian_pulse
+from pyteukolsky import swsh, gaussian_pulse, project_swsh, fit_qnm_frequency
 
-M, a, m = 1.0, 0.9, 2
-grid = Grid(rmin=0.8, rmax=400.0, Nmu=64, Nr=4000)      # rmin < r_+ (excision)
+M, a, m = 1.0, 0.0, 2
+# For Schwarzschild: rmin just inside r_+ = 2M to avoid inside-horizon instability
+grid = Grid(rmin=1.99, rmax=100.0, Nmu=32, Nr=200, M=M)
 rhs  = TeukolskyRHS(grid, M, a, m, dissipation=0.1)
 sim  = Evolution(rhs)
 
-psi1 = gaussian_pulse(grid, r0=20.0, sigma=2.0, ell=2, m=m)
-sim.set_initial_data(psi0=psi1, psi1=psi1, dt_init=1e-3)  # time-symmetric
+psi0 = gaussian_pulse(grid, r0=10.0, sigma_r=2.0, ell=2, m=m)
+sim.set_initial_data(psi0=psi0, psi1=psi0, dt_init=1e-3)  # time-symmetric
 
-for r_ext in (50.0, 100.0, 200.0):
-    sim.add_detector(r_ext)
-
-sim.evolve(t_final=500.0, cfl=0.5)
-sim.save("ringdown.npz")            # times + psi_m(t, mu) at each detector
+sim.add_detector(30.0)
+sim.evolve(t_final=140.0, cfl=0.45)
+sim.save_waveforms("ringdown.npz")
 ```
 
-### 3.1 Waveform extraction
+### 3.1 Waveform extraction and QNM fitting
 
-At each detector radius the solver stores the full $\mu$ profile of
-$\psi_m(t,\mu)$. For ringdown studies, project onto $_{-2}Y_{\ell m}$ to get
-$\psi_{\ell m}(t)$, then fit damped sinusoids to read off quasinormal-mode
-frequencies. The dominant test case is $\ell=m=2$.
+At each detector the solver records the full $\mu$ profile $\psi_m(t,\mu)$.
+Project onto $_{-2}Y_{\ell m}$ to collapse to a scalar time series, then fit
+the ringdown:
+
+```python
+mu  = grid._mu[grid.ghost : grid.ghost + grid.Nmu]
+sw  = swsh(-2, 2, m, mu)
+
+# psi_22 shape: (Nt,)
+psi_22 = project_swsh(sim.waveforms[30.0], mu, sw)
+
+# Fit in window after transient burst has passed and before boundary reflections
+omega_R, omega_I = fit_qnm_frequency(sim.times, psi_22.real,
+                                     t_start=90.0, t_end=130.0)
+print(f"Mω = {M*omega_R:.4f} + {M*omega_I:.4f}i")
+# Schwarzschild ℓ=m=2: Mω ≈ 0.3737 - 0.0890i
+```
+
+**Timing note for Schwarzschild ($a=0$):** the outgoing burst from $r_0=10\,M$ peaks
+at $r_{\rm ext}=30\,M$ around $t\approx60\text{–}80\,M$.  Start the fit at
+$t\approx90\,M$ (burst gone) and stop before $t\approx160\,M$ (first Sommerfeld
+reflection from $r_{\rm max}=100\,M$).
+
+**rmin guideline:** with the log grid and $r_+=2M$ (Schwarzschild), choosing
+$r_{\rm min}\approx1.99\,M$ ensures all interior cells sit outside the horizon
+($r>r_+$).  Choosing $r_{\rm min}=1.5\,M$ places several interior cells inside
+the horizon where the $C_v/A$ coefficient is positive-real, causing slow
+exponential growth that leaks through the centered-difference stencil.  For
+Kerr use $r_{\rm min}$ just inside $r_+=M+\sqrt{M^2-a^2}$.
 
 ## 4. Validation & roadmap
 
@@ -305,12 +342,16 @@ Milestones, in order:
 3. ✅ **Evolution** — RK4 driver + CFL + Sommerfeld/excision/pole BCs; pulse
    propagation verified via `scripts/run_example.py` (1D and 2D animations,
    waveform extraction; 30 tests in `tests/test_evolve.py`).
-4. **Validation** — Schwarzschild ($a=0$) ringdown: extract $\ell=m=2$ QNM
-   frequency and compare to the known value ($M\omega \approx 0.3737 - 0.0890\,i$);
-   self-convergence test in $N_r$, $N_\mu$.
+4. ✅ **Validation** — Schwarzschild ($a=0$) $\ell=m=2$ ringdown with SWSH
+   initial data (`initialdata.py`), SWSH projection and damped-cosine fitting
+   (`diagnostics.py`). Extracted $M\omega_R=0.3717$, $M\omega_I=-0.0904$ vs.
+   known $0.3737-0.0890\,i$ (<2% error at $N_r=100$, $N_\mu=16$).
+   Self-convergence ratio $>3$ confirmed (2nd-order in $N_r$).
+   Key finding: use $r_{\rm min}\approx r_+$ to keep interior cells outside
+   the horizon (see §3.1). 12 tests in `tests/test_validation.py`.
 5. **Kerr** — repeat for $a\neq0$; confirm QNM frequencies vs. published tables;
    validate the pole-parity factor (§1.4) here.
-6. **Polish** — snapshot I/O, docs.
+6. **Polish** — docs.
 
 ## 5. Notes
 

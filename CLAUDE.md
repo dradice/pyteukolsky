@@ -18,7 +18,7 @@ The repository contains:
 - `scripts/check_equations.py` — symbolic verification of the equations.
 - `README.md` — formalism summary, the mode equation, and the full
   implementation plan. **Consult it before starting any new milestone.**
-- `pyteukolsky/` — the solver package (milestones 1–3 complete; see below).
+- `pyteukolsky/` — the solver package (milestones 1–4 complete; see below).
 - `scripts/run_example.py` — end-to-end pulse demo (produces static PNG, 1D/2D GIFs, waveform .npz).
 - `tests/` — pytest unit tests for every completed milestone.
 
@@ -81,17 +81,34 @@ grid, evolved and saved as static figure + 1D/2D GIF animations + waveforms.
   `σ_μ=0.3` to suppress the near-pole singularity of `V = (2μ-m)²/(1-μ²)-2`.
 - Plots `r·Re[ψ_m]` (not `ψ_m`) to remove the 1/r fall-off.
 
+**Milestone 4 — `pyteukolsky/initialdata.py`, `pyteukolsky/diagnostics.py`**
+Schwarzschild validation, SWSH initial data, QNM frequency extraction.
+- `pyteukolsky/initialdata.py`: `swsh(spin, ell, m, mu)` — analytic _{-2}Y_{2m}(μ) at φ=0
+  using Wigner d-matrix elements; `gaussian_pulse(grid, r0, sigma_r, ...)` — Gaussian
+  shell × SWSH angular profile.
+- `pyteukolsky/diagnostics.py`: `project_swsh(psi_mu, mu, swsh_profile)` — midpoint-rule
+  SWSH projection; `fit_qnm_frequency(times, psi_t, t_start, t_end)` — extracts (ω_R, ω_I)
+  via damped-cosine `curve_fit` (real signals) or log-amplitude/phase linear fit (complex).
+- Key finding: for QNM runs use `rmin ≈ 1.99M` (Schwarzschild r₊ = 2M) so all interior
+  cells are outside the horizon; with `rmin = 1.5M` several interior cells sit inside the
+  horizon where the Cv/A coefficient is positive-real → exponential growth leaking through
+  the FD stencil. The transient wave burst at r_ext=30M peaks at t ≈ 60-80M; fit the QNM
+  in [90, 130]M to avoid the burst.
+- QNM result: Schwarzschild ℓ=m=2 fundamental mode extracted as Mω_R = 0.3717,
+  Mω_I = −0.0904 (known: 0.3737 − 0.0890i) with Nr=100, Nmu=16.
+- Tests: `tests/test_validation.py` (12 tests: SWSH normalization, pulse shape,
+  projection, synthetic QNM fit, Schwarzschild QNM frequency, Nr self-convergence).
+
 ### Pending
 
-- **Milestone 4** — Validation: Schwarzschild (`a=0`) `ℓ=m=2` ringdown, QNM frequency
-  `Mω ≈ 0.3737 − 0.0890i`, self-convergence tests.
 - **Milestone 5** — Kerr (`a≠0`): QNM vs. published tables, validate pole parity.
 - **Milestone 6** — Polish: docs.
 
 ## Commands
 
-The user's Python interpreter is `~/local/miniforge/bin/python` (has sympy
-1.14). Plain `python`/`python3` are not on PATH — always use the miniforge path.
+The user's Python interpreter is `~/local/miniforge/bin/python` (has sympy 1.14,
+scipy 1.18, numpy, matplotlib). Plain `python`/`python3` are not on PATH — always
+use the miniforge path.
 
 Verify the equations:
 ```
