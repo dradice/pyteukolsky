@@ -2,6 +2,11 @@
 __pycache__/
 *.py[cod]
 
+# Build / packaging artifacts
+build/
+dist/
+*.egg-info/
+
 # Editor / IDE
 .vscode/
 

@@ -53,15 +53,22 @@ coefficient.**
 
 ## Installation & requirements
 
-Pure Python; no build step. Dependencies:
+```bash
+git clone https://github.com/dradice/PyTeukolsky
+cd PyTeukolsky
+pip install -e .
+```
 
-- `numpy` (arrays, FD operators, time stepping)
-- `scipy` (QNM curve fitting in `diagnostics.py`)
-- `matplotlib` (only for the `scripts/run_example.py` animations)
-- `sympy` (only for `scripts/check_equations.py`)
-- `pytest` (to run the test suite)
+Core dependencies (`numpy`, `scipy`) are installed automatically.
+Optional extras:
 
-Put the repository root on `PYTHONPATH` (or run from it) and import the package:
+```bash
+pip install "pyteukolsky[plot]"   # matplotlib — for scripts/run_example.py
+pip install "pyteukolsky[sympy]"  # sympy>=1.18 — for scripts/check_equations.py
+pip install "pyteukolsky[dev]"    # pytest — to run the test suite
+```
+
+Then import the package:
 
 ```python
 from pyteukolsky import Grid, TeukolskyRHS, Evolution
