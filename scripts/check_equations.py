@@ -1,14 +1,15 @@
 """
-Verify the 'money equation' (last eq. before Conclusions, lines 431-449) of ks6.tex.
+Verify the mode equation ('MODE') the code evolves, following Campanelli et al.
+(2001), gr-qc/0010034.
 
 Two checks:
   CHECK 1 (the direct question):
     The mode equation must be the angular reduction psi = psi_m * exp(i m phi)
-    of the 3D 'PTC' equation (lines 402-424) that the code evolves.
+    of the 3D 'PTC' equation that the code evolves.
 
   CHECK 2 (sanity of the parent):
     The PTC equation should follow from the 'big psi_4' Teukolsky equation
-    (lines 354-391) via psi = (r - i a cos theta)^4 psi_4, up to an overall
+    via psi = (r - i a cos theta)^4 psi_4, up to an overall
     nonzero factor (which the second-derivative coefficients fix to 2*Sigma*zeta^4).
 
   CHECK 3 (numerics: angular variable mu = cos theta):
@@ -68,7 +69,7 @@ psi   = sp.Function('psi')(t, r, th, ph)
 psi_m = sp.Function('psi_m')(t, r, th)
 
 def PTC(P):
-    # lines 402-424
+    # 3D equation for psi = zeta^4 psi_4 that the code evolves
     return ( (Sigma + 2*M*r)*sp.diff(P, t, 2)
              - Delta*sp.diff(P, r, 2)
              - 6*(r - M)*sp.diff(P, r)
@@ -81,7 +82,7 @@ def PTC(P):
              + 2*(3*sp.cot(th)**2 - 1/s**2)*P )
 
 def MODE(F):
-    # lines 431-449  (paper's claimed result)
+    # per-m angular reduction (the paper's claimed result)
     return ( (Sigma + 2*M*r)*sp.diff(F, t, 2)
              - Delta*sp.diff(F, r, 2)
              - (2*a*I*m + 6*r - 6*M)*sp.diff(F, r)
@@ -104,7 +105,7 @@ print("CHECK 2 : PTC equation  vs  big psi_4 equation  (psi = zeta^4 psi_4)")
 print("#"*70)
 
 def BIG(P4):
-    # lines 354-391, acting on psi_4
+    # full psi_4 Teukolsky equation, acting on psi_4
     secn = ( sp.Rational(1,2)*(Sigma + 2*M*r)/Sigma*sp.diff(P4, t, 2)
              - sp.Rational(1,2)*Delta/Sigma*sp.diff(P4, r, 2)
              - 2*M*r/Sigma*sp.diff(P4, r, t)
