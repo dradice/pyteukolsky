@@ -144,7 +144,9 @@ support Kreiss–Oliger dissipation, §1.6).
   pole with a parity factor $p$: $\psi(\mu_{\rm ghost}) = p\,\psi(\mu_{\rm mirror})$.
   For a spin-weight $s=-2$, azimuthal-$m$ field the parity is $p=(-1)^{m}$;
   the staggered grid makes the choice a property of the ghost fill only.
-  This parity is confirmed correct for Schwarzschild $\ell=m=2$ (Milestone 4).
+  This parity is confirmed correct for $\ell=m=2$: the Schwarzschild and Kerr
+  QNM frequencies are only recovered with $p=+1$ (Milestones 4–5); forcing
+  $p=-1$ shifts the frequency out of tolerance.
 
 ### 1.5 Time integration & stability
 
@@ -194,7 +196,8 @@ tests/
   test_grid.py       # 11 tests: FD operators, 2nd-order convergence
   test_equation.py   # 16 tests: coefficient arrays, rhs() linearity
   test_evolve.py     # 30 tests: RK4 driver, CFL, detectors, I/O
-  test_validation.py # 12 tests: SWSH normalization, QNM frequency, self-convergence
+  test_validation.py # 12 tests: SWSH normalization, Schwarzschild QNM, self-convergence
+  test_kerr.py       # 5 tests: Kerr QNM vs tables, spin trend, pole parity
 ```
 
 ### 2.1 `Grid` (`grid.py`)
@@ -349,8 +352,18 @@ Milestones, in order:
    Self-convergence ratio $>3$ confirmed (2nd-order in $N_r$).
    Key finding: use $r_{\rm min}\approx r_+$ to keep interior cells outside
    the horizon (see §3.1). 12 tests in `tests/test_validation.py`.
-5. **Kerr** — repeat for $a\neq0$; confirm QNM frequencies vs. published tables;
-   validate the pole-parity factor (§1.4) here.
+5. ✅ **Kerr** — $a\neq0$ $\ell=m=2$ QNM frequencies vs. published tables.
+   No new solver code: the `TeukolskyRHS` coefficients already carry the full
+   $a$-dependence, so the 2D $(r,\mu)$ evolution captures the spin-weighted
+   *spheroidal* structure automatically. Extracted (Nr=120, Nmu=24,
+   complex-path fit): $a=0.5\to M\omega=0.4597-0.0878i$ (table
+   $0.4641-0.0846i$); $a=0.9\to M\omega=0.6687-0.0643i$ (table
+   $0.6716-0.0649i$); $\omega_R$ within $\sim1\%$. Pole-parity factor $(-1)^m$
+   validated: forcing the wrong sign shifts $M\omega_R$ by $\sim0.05$ out of
+   tolerance. 5 tests in `tests/test_kerr.py`. Reference frequencies: Berti,
+   Cardoso & Will, *Phys. Rev. D* **73**, 064030 (2006), arXiv:gr-qc/0512160
+   ([tabulated data](https://pages.jh.edu/eberti2/ringdown/)), computed by
+   Leaver's continued-fraction method, *Proc. R. Soc. Lond. A* **402**, 285 (1985).
 6. **Polish** — docs.
 
 ## 5. Notes

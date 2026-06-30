@@ -18,7 +18,7 @@ The repository contains:
 - `scripts/check_equations.py` — symbolic verification of the equations.
 - `README.md` — formalism summary, the mode equation, and the full
   implementation plan. **Consult it before starting any new milestone.**
-- `pyteukolsky/` — the solver package (milestones 1–4 complete; see below).
+- `pyteukolsky/` — the solver package (milestones 1–5 complete; see below).
 - `scripts/run_example.py` — end-to-end pulse demo (produces static PNG, 1D/2D GIFs, waveform .npz).
 - `tests/` — pytest unit tests for every completed milestone.
 
@@ -99,9 +99,33 @@ Schwarzschild validation, SWSH initial data, QNM frequency extraction.
 - Tests: `tests/test_validation.py` (12 tests: SWSH normalization, pulse shape,
   projection, synthetic QNM fit, Schwarzschild QNM frequency, Nr self-convergence).
 
+**Milestone 5 — Kerr validation (`tests/test_kerr.py`)**
+Kerr (`a≠0`) ℓ=m=2 QNM frequencies vs. published tables; pole-parity check.
+- No new solver code: `TeukolskyRHS` coefficients (`Sigma = r²+a²μ²`, `Delta`,
+  `A`, `Cv`, `Cr`) already carry full `a`-dependence, so the 2D `(r,μ)` evolution
+  captures the spin-weighted *spheroidal* angular structure automatically (the
+  `a²ω²μ²` coupling enters through `A` acting on `d_t v`). Projecting onto the
+  spherical `_{-2}Y_{2m}` still isolates the dominant ℓ=2 content.
+- For `a≠0` the field is genuinely complex (`Cv`, `Cr` have imaginary parts), so
+  use the **complex code path** of `fit_qnm_frequency` (log-amp + unwrapped-phase
+  linear fits). The real-part fit is noticeably noisier for Kerr.
+- Grid: `rmin = 0.99·r₊` with `r₊ = M + √(M²−a²)` keeps all interior cells
+  outside the horizon (same instability avoidance as Schwarzschild). Window
+  `[100,150]M` (rmax=120M, t_final=160M) is clean of burst and reflections.
+- Results (Nr=120, Nmu=24): code vs. published Mω:
+  a=0.5 → (0.4597, −0.0878) vs (0.4641, −0.0846);
+  a=0.9 → (0.6687, −0.0643) vs (0.6716, −0.0649). All ω_R within ~1%.
+  Reference values: Berti, Cardoso & Will, PRD 73, 064030 (2006),
+  arXiv:gr-qc/0512160 (tables at https://pages.jh.edu/eberti2/ringdown/),
+  via Leaver's method, Proc. R. Soc. Lond. A 402, 285 (1985).
+- Pole parity: the correct `(−1)^m = +1` parity for m=2 recovers the published
+  QNM; forcing parity `−1` shifts Mω_R to ~0.51 (a ~0.05 error), confirming the
+  ghost-fill sign matters. Tested by overriding `rhs.parity`.
+- Tests: `tests/test_kerr.py` (5 tests: interior-cell placement, a=0.5 & a=0.9
+  QNM, prograde spin trend, pole parity).
+
 ### Pending
 
-- **Milestone 5** — Kerr (`a≠0`): QNM vs. published tables, validate pole parity.
 - **Milestone 6** — Polish: docs.
 
 ## Commands
