@@ -10,9 +10,13 @@ multi-panel figure for one extraction radius:
   * the amplitude |·| (optionally on a log scale);
   * the instantaneous frequency M·ω = -d(arg)/dt.
 
-The detector waveform is stored on the full (t, μ) grid; it is reduced to a
-single complex time series by projecting onto the spin-weighted spherical
-harmonic ₋₂Y_{ℓm}(μ) via diagnostics.project_swsh.
+The stored field is the evolved ψ_m = ζ⁴ψ₄ in the *ingoing Kerr–Schild* tetrad,
+which does not peel (ψ_m/ζ⁴ ~ 1/r⁵).  It is first converted to the Kinnersley /
+radiation-frame Weyl scalar ψ₄ = Δ²/ζ⁴ · ψ_m (diagnostics.psi4_kinnersley), so
+that r·ψ₄ peels to a constant.  Because ζ = r − i a μ is μ-dependent for a ≠ 0,
+the conversion is applied on the full (t, μ) grid *before* the reduction to a
+single complex time series by projecting onto ₋₂Y_{ℓm}(μ) via
+diagnostics.project_swsh.  (Pass --quantity psi_m to plot the raw evolved field.)
 
 Usage:
     ~/local/miniforge/bin/python scripts/plot_waveforms.py --list
@@ -32,7 +36,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import hilbert
 
-from pyteukolsky.diagnostics import project_swsh
+from pyteukolsky.diagnostics import project_swsh, psi4_kinnersley
 from pyteukolsky.initialdata import swsh
 
 
@@ -225,9 +229,11 @@ def parse_args():
     p.add_argument("-r", "--radius", type=float, default=None,
                    help="extraction radius / M to plot (nearest available is "
                         "used; default: the first radius)")
-    p.add_argument("--quantity", choices=["psi4", "strain"], default="psi4",
-                   help="plot ψ₄ directly, or the strain h from ψ₄ via "
-                        "fixed-frequency integration (default psi4)")
+    p.add_argument("--quantity", choices=["psi4", "psi_m", "strain"],
+                   default="psi4",
+                   help="plot the Kinnersley ψ₄ = Δ²/ζ⁴·ψ_m (default), the raw "
+                        "evolved field ψ_m, or the strain h from ψ₄ via "
+                        "fixed-frequency integration")
     p.add_argument("--ell", type=int, default=2,
                    help="spherical-harmonic ℓ to project onto (default 2)")
     p.add_argument("--log", action="store_true",
@@ -274,10 +280,18 @@ def main():
     if psi_tmu.shape[0] != t.size:
         sys.exit(f"Waveform/time length mismatch: {psi_tmu.shape[0]} vs {t.size}.")
 
-    psi4 = project_mode(psi_tmu, mu, spin=-2, ell=args.ell, m=m)   # (Nt,)
+    # Convert the raw evolved field ψ_m = ζ⁴ψ₄ (ingoing Kerr–Schild tetrad) to
+    # the Kinnersley/radiation-frame ψ₄ = Δ²/ζ⁴ · ψ_m *before* projecting: for
+    # a ≠ 0 the factor ζ = r − i a μ is μ-dependent and does not commute with the
+    # SWSH projection (for a = 0 it is a constant, so the order is irrelevant).
+    psi4_tmu = psi4_kinnersley(psi_tmu, r_ext, mu, M, a, m)          # (Nt, Nmu)
+    psi4  = project_mode(psi4_tmu, mu, spin=-2, ell=args.ell, m=m)   # (Nt,)
+    psi_m = project_mode(psi_tmu,  mu, spin=-2, ell=args.ell, m=m)   # raw field
 
     if args.quantity == "psi4":
         z, label = psi4, r"r\,\psi_4"
+    elif args.quantity == "psi_m":
+        z, label = psi_m, r"r\,\psi_m"
     else:
         omega0 = args.omega0
         if omega0 is None:
