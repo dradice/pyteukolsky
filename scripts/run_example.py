@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import math
 import os
 import sys
 from typing import cast
@@ -28,6 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.animation as mplanim
 import numpy as np
+from tqdm import tqdm
 
 from pyteukolsky import Evolution, Grid, TeukolskyRHS
 
@@ -35,6 +37,16 @@ from pyteukolsky import Evolution, Grid, TeukolskyRHS
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def n_frames_type(s):
+    """Parse --n_frames: a positive int, or 'inf' for every timestep."""
+    if s.lower() in ("inf", "all"):
+        return math.inf
+    n = int(s)
+    if n < 1:
+        raise argparse.ArgumentTypeError("--n_frames must be >= 1 (or 'inf')")
+    return n
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Teukolsky Gaussian pulse example")
@@ -62,10 +74,14 @@ def parse_args():
                    help="CFL factor (default 0.45)")
     p.add_argument("--diss",     type=float, default=0.3,
                    help="Kreiss-Oliger dissipation ε (default 0.3)")
-    p.add_argument("--n_frames", type=int,   default=120,
-                   help="approximate number of animation frames (default 120)")
+    p.add_argument("--n_frames", type=n_frames_type, default=120,
+                   help="approximate number of animation frames "
+                        "(default 120; use 'inf' to snapshot every timestep)")
     p.add_argument("--fps",      type=int,   default=20,
                    help="animation frames per second (default 20)")
+    p.add_argument("--no-plots", dest="no_plots", action="store_true",
+                   help="skip the static figure and animations "
+                        "(still writes the waveforms .npz)")
     p.add_argument("--stem",     default="pulse_animation",
                    help="output filename stem (default 'pulse_animation')")
     return p.parse_args()
@@ -113,17 +129,24 @@ def run_simulation(args):
 
     dt         = evo.cfl_dt(cfl=args.cfl)
     n_steps    = int(np.ceil(args.t_final / dt))
-    snap_every = max(1, n_steps // args.n_frames)
+    # Snapshots are only used for the figures/animations; skip them entirely
+    # when plotting is disabled (saves memory, esp. with --n_frames inf).
+    snap_every = (None if args.no_plots else
+                  1 if math.isinf(args.n_frames) else
+                  max(1, n_steps // args.n_frames))
 
     dr_mean = (g.r[g.ghost + g.Nr - 1] - g.r[g.ghost]) / max(g.Nr - 1, 1)
     print(f"Grid   : Nr={args.Nr} (mean dr≈{dr_mean:.3f} M), Nmu={args.Nmu}")
     print(f"         r ∈ [{r_int[0]:.2f}, {r_int[-1]:.2f}] M")
     print(f"Physics: M={M}, a={args.a}, m={args.m}, r_H={r_H:.3f} M")
     print(f"Pulse  : r0={args.r0} M, σ_r={args.sigma} M, σ_μ={args.sigma_mu}")
+    n_frames_msg = "0 (plots off)" if snap_every is None else n_steps // snap_every
     print(f"Time   : t_final={args.t_final} M, dt≈{dt:.4f} M, "
-          f"~{n_steps} steps, ~{n_steps // snap_every} frames")
+          f"~{n_steps} steps, ~{n_frames_msg} frames")
 
-    evo.evolve(args.t_final, dt=dt, snapshot_every=snap_every)
+    with tqdm(total=n_steps, unit="step", desc="Evolving") as pbar:
+        evo.evolve(args.t_final, dt=dt, snapshot_every=snap_every,
+                   on_step=lambda: pbar.update(1))
     print(f"Collected {len(evo.snapshots)} snapshots.")
 
     gs     = g.ghost
@@ -276,9 +299,12 @@ def main():
     data = run_simulation(args)
     stem = args.stem
 
-    make_static_figure(data, stem + "_static.png")
-    make_animation_1d( data, stem + "_1d.gif",   fps=args.fps)
-    make_animation_2d( data, stem + "_2d.gif",   fps=args.fps)
+    if args.no_plots:
+        print("Plots/animations  → skipped (--no-plots)")
+    else:
+        make_static_figure(data, stem + "_static.png")
+        make_animation_1d( data, stem + "_1d.gif",   fps=args.fps)
+        make_animation_2d( data, stem + "_2d.gif",   fps=args.fps)
 
     evo = cast(Evolution, data['evo'])
     evo.save_waveforms(stem + "_waveforms.npz")

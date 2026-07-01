@@ -155,7 +155,7 @@ class Evolution:
     # ------------------------------------------------------------------
 
     def evolve(self, t_final, cfl=0.5, dt=None, record_every=1,
-               snapshot_every=None):
+               snapshot_every=None, on_step=None):
         """March the state to t_final, recording detector waveforms.
 
         Parameters
@@ -170,6 +170,9 @@ class Evolution:
             Record detector data every this many steps.
         snapshot_every : int or None
             Store full-grid (psi) snapshots every this many steps.
+        on_step : callable or None
+            If given, called with no arguments after every completed RK4
+            step.  Intended for progress reporting (e.g. a tqdm update).
 
         After returning, results are in self.times (shape (Nt,)) and
         self.waveforms ({r_ext: array shape (Nt, Nmu)}).
@@ -198,6 +201,9 @@ class Evolution:
 
             if snapshot_every is not None and step_count % snapshot_every == 0:
                 self.snapshots.append((self.t, self.psi.copy()))
+
+            if on_step is not None:
+                on_step()
 
         self.times = np.array(t_list, dtype=float)
         for r_ext, *_ in self._detectors:
