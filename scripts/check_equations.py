@@ -16,6 +16,19 @@ Two checks:
     Confirms the substitution used by the solver. The angular sector of the
     mode equation, written with mu = cos theta, becomes the Legendre-type
     operator  -d/dmu[(1-mu^2) d/dmu]  with potential  (2 mu - m)^2/(1-mu^2) - 2.
+
+  CHECK 4 (waveform extraction: psi_4 from psi_m, and the tetrad rescaling):
+    The evolved field is psi = zeta^4 psi_4 with zeta = r - i a cos theta, so
+    the horizon-penetrating (Kerr-Schild) Weyl scalar is
+        psi_4^KS  = psi_m e^{i m phi} / zeta^4.
+    Its outgoing radial solution falls as 1/r (verified here by the large-r
+    indicial exponent of the mode radial operator), so psi_4^KS ~ 1/r^5 and does
+    NOT peel. The Kinnersley / radiation-frame scalar is recovered by undoing the
+    l -> Delta l horizon-regularising boost (psi_4 ~ n^2, n -> n/Delta):
+        psi_4^Kin = Delta^2 psi_4^KS,
+    whose radial part zeta^4 psi_4^Kin = Delta^2 psi_m ~ r^3, matching the
+    standard s=-2 outgoing Teukolsky peeling r^{-1-2s_spin} = r^3.
+    (Implemented as pyteukolsky.diagnostics.psi4_kinnersley.)
 """
 import sympy as sp
 
@@ -163,3 +176,53 @@ res_ang = sp.simplify(ang_theta - ang_mu.subs(mu, c))
 print("\n--- 3b: full angular operator (generic quintic test function) ---")
 print("  [theta-form] - [mu-form] =", res_ang,
       " ->", "OK" if res_ang == 0 else "MISMATCH")
+
+# ======================================================================
+# CHECK 4 : psi_4 extraction and the Kerr-Schild -> Kinnersley rescaling
+# ======================================================================
+print()
+print("#"*70)
+print("CHECK 4 : psi_4 = psi_m e^{i m phi}/zeta^4  and  psi_4^Kin = Delta^2 psi_4^KS")
+print("#"*70)
+
+# Large-r indicial exponent of the mode RADIAL operator (Schwarzschild, a=0):
+# with psi_m = e^{-i omega t} R(r), the radial ODE is
+#     Delta R'' + (Cr - i omega B) R' + (A omega^2 - i omega Cv + lam) R = 0,
+# and the OUTGOING solution behaves as R ~ e^{i omega r} r^s at large r.
+Mr, wr = sp.symbols('M omega', real=True, positive=True)
+rr, ss, lam = sp.symbols('r s lambda')
+Delta0 = rr**2 - 2*Mr*rr        # a = 0
+A0     = rr**2 + 2*Mr*rr
+Cr0    = 6*rr - 6*Mr
+B0     = 4*Mr*rr
+Cv0    = 4*rr + 6*Mr
+
+def outgoing_exponent(Delta, A, Cr, B, Cv):
+    """Solve the leading large-r balance for s in R = e^{i omega r} r^s."""
+    P = Cr - sp.I*wr*B
+    Q = A*wr**2 - sp.I*wr*Cv + lam
+    # For R = e^{i w r} r^s:  R'/R = i w + s/r,  R''/R = (i w + s/r)^2 - s/r^2
+    L_over_R = sp.expand(Delta*((sp.I*wr + ss/rr)**2 - ss/rr**2)
+                         + P*(sp.I*wr + ss/rr) + Q)
+    pmax = max(int(t.as_independent(rr)[1].as_base_exp()[1]) if t.has(rr) else 0
+               for t in L_over_R.as_ordered_terms())
+    lead = sp.simplify(L_over_R.coeff(rr, pmax))
+    return sp.simplify(sp.solve(sp.Eq(lead, 0), ss)[0])
+
+s_ks = outgoing_exponent(Delta0, A0, Cr0, B0, Cv0)
+re_ks = sp.re(s_ks)
+print("\n--- 4a: outgoing radial exponent of psi_m = zeta^4 psi_4^KS ---")
+print(f"  s = {s_ks}   ->   |psi_m| ~ r^(Re s) = r^{re_ks}")
+print("  ->", "OK (falls as 1/r; hence psi_4^KS = psi_m/zeta^4 ~ 1/r^5)"
+      if re_ks == -1 else "UNEXPECTED")
+
+# Kinnersley radial part is Delta^2 * (zeta^4 psi_4^KS) = Delta^2 * R.
+# Delta^2 ~ r^4 at large r, so the magnitude exponent shifts by +4.
+re_kin      = re_ks + 4
+s_spin      = -2
+peel_expect = -1 - 2*s_spin       # standard s=-2 outgoing Teukolsky: r^{-1-2s}
+print("\n--- 4b: Kinnersley psi_4^Kin = Delta^2 psi_4^KS restores peeling ---")
+print(f"  zeta^4 psi_4^Kin = Delta^2 psi_m ~ r^{re_kin}   "
+      f"(standard s=-2 outgoing r^{{-1-2s}} = r^{peel_expect})")
+print("  ->", "OK -> psi_4^Kin ~ 1/r (peels)" if re_kin == peel_expect
+      else "MISMATCH")

@@ -1,9 +1,58 @@
 """
-Waveform diagnostics: SWSH projection and QNM frequency extraction.
+Waveform diagnostics: SWSH projection, QNM frequency extraction, and
+reconstruction of the Weyl scalar psi_4 from the evolved mode field psi_m.
 """
 
 import numpy as np
 from scipy.optimize import curve_fit
+
+
+def psi4_kinnersley(psi_m, r, mu, M, a, m, phi=0.0):
+    r"""Kinnersley-frame Weyl scalar psi_4 from the evolved mode field psi_m.
+
+    The solver evolves psi_m, the azimuthal-m mode of psi = zeta^4 * psi_4 in
+    *ingoing Kerr-Schild* (horizon-penetrating) coordinates, with
+    zeta = r - i a cos(theta).  Two useful Weyl scalars follow (see
+    scripts/check_equations.py, CHECK 4):
+
+        psi_4^KS  = psi_m e^{i m phi} / zeta^4          (horizon-penetrating tetrad)
+        psi_4^Kin = Delta^2 * psi_4^KS                  (Kinnersley / radiation frame)
+
+    The horizon-penetrating tetrad is the Kinnersley one with the ingoing leg
+    regularised, l -> Delta l (Kinnersley l^mu ~ 1/Delta diverges at r_+).
+    Because psi_4 is quadratic in the ingoing null leg n -> n/Delta, the scalar
+    picks up psi_4 -> psi_4 / Delta^2.  Undoing that boost (multiplying by
+    Delta^2) recovers the standard s=-2 *peeling* behaviour psi_4^Kin ~ 1/r at
+    large r, whereas the bare psi_m/zeta^4 falls as 1/r^5.  (At the horizon
+    Delta -> 0, so psi_4^Kin -> 0 while the code field psi_m/zeta^4 stays finite
+    — the regularity that motivates the horizon-penetrating formulation.)
+
+    This returns the Kinnersley scalar; drop the ``Delta**2`` factor for the
+    horizon-penetrating one.
+
+    Parameters
+    ----------
+    psi_m : ndarray, complex
+        Evolved mode field, e.g. detector data of shape (Nt, Nmu) or a full
+        grid slice.  ``r`` and ``mu`` are broadcast against it.
+    r : float or ndarray
+        Extraction radius / radial coordinate (broadcastable to psi_m).
+    mu : float or ndarray
+        mu = cos(theta) (broadcastable to psi_m).
+    M, a : float
+        Black-hole mass and spin.
+    m : int
+        Azimuthal mode number.
+    phi : float, optional
+        Azimuthal angle at which to evaluate the e^{i m phi} factor (default 0).
+
+    Returns
+    -------
+    ndarray, complex — psi_4^Kinnersley, same broadcast shape as the inputs.
+    """
+    zeta  = r - 1j * a * mu
+    Delta = r**2 - 2.0 * M * r + a**2
+    return psi_m * np.exp(1j * m * phi) * Delta**2 / zeta**4
 
 
 def project_swsh(psi_mu, mu, swsh_profile):
