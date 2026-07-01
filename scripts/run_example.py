@@ -131,8 +131,7 @@ def run_simulation(args):
     n_steps    = int(np.ceil(args.t_final / dt))
     # Snapshots are only used for the figures/animations; skip them entirely
     # when plotting is disabled (saves memory, esp. with --n_frames inf).
-    snap_every = (None if args.no_plots else
-                  1 if math.isinf(args.n_frames) else
+    snap_every = (1 if math.isinf(args.n_frames) else
                   max(1, n_steps // args.n_frames))
 
     dr_mean = (g.r[g.ghost + g.Nr - 1] - g.r[g.ghost]) / max(g.Nr - 1, 1)
@@ -309,6 +308,8 @@ def main():
     evo = cast(Evolution, data['evo'])
     evo.save_waveforms(stem + "_waveforms.npz")
     print(f"Waveforms        → {stem}_waveforms.npz")
+    evo.save_snapshots(stem + "_snapshots.npz")
+    print(f"Snapshots        → {stem}_snapshots.npz")
 
 
 if __name__ == "__main__":
