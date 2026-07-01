@@ -14,3 +14,7 @@ dist/
 *.gif
 *.npz
 *_static.png
+
+# plot_waveforms.py output files
+*_psi4_r*.png
+*_strain_r*.png
