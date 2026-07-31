@@ -8,6 +8,7 @@ non-modification of inputs.
 """
 
 import numpy as np
+import pytest
 import sys
 import os
 
@@ -175,6 +176,65 @@ def test_rhs_does_not_modify_inputs():
     rhs.rhs(psi, v)
     assert np.array_equal(psi, psi_orig)
     assert np.array_equal(v,   v_orig)
+
+
+def test_i_exc_safe_rmin():
+    """rmin=1.99 (Schwarzschild): first interior column is already outside
+    r_+=2M, so i_exc should equal grid.ghost (no excised columns)."""
+    g = Grid(rmin=1.99, rmax=100.0, Nmu=16, Nr=100, ghost=2, M=1.0)
+    rhs = TeukolskyRHS(g, M=1.0, a=0.0, m=2, one_sided_horizon=True)
+    assert rhs.i_exc == g.ghost
+
+
+def test_i_exc_aggressive_rmin():
+    """rmin=1.5 (inside r_+=2M, run_example.py's own default): several
+    interior columns are inside the horizon, so i_exc must be found
+    dynamically and land just outside r_+."""
+    g = Grid(rmin=1.5, rmax=100.0, Nmu=16, Nr=200, ghost=2, M=1.0)
+    rhs = TeukolskyRHS(g, M=1.0, a=0.0, m=2, one_sided_horizon=True)
+    assert rhs.i_exc > g.ghost
+    assert g.r[rhs.i_exc].real > rhs.r_plus
+    assert g.r[rhs.i_exc - 1].real <= rhs.r_plus
+
+
+def test_i_exc_raises_when_no_good_columns():
+    """A grid entirely inside the horizon should raise a clear error rather
+    than silently picking a bogus excision column."""
+    g = Grid(rmin=1.0, rmax=1.9, Nmu=16, Nr=50, ghost=2, M=1.0)
+    with pytest.raises(ValueError):
+        TeukolskyRHS(g, M=1.0, a=0.0, m=2, one_sided_horizon=True)
+
+
+def test_one_sided_horizon_default_off_does_not_raise():
+    """A horizon-straddling grid must not raise when the feature is off
+    (i_exc/r_plus are always computed, but only used when the flag is set)."""
+    g = Grid(rmin=1.5, rmax=100.0, Nmu=16, Nr=200, ghost=2, M=1.0)
+    rhs = TeukolskyRHS(g, M=1.0, a=0.0, m=2)  # one_sided_horizon=False
+    assert rhs.one_sided_horizon is False
+
+
+def test_one_sided_horizon_decouples_from_excised_region():
+    """With one_sided_horizon=True and dissipation>0, perturbing psi at the
+    column just inside the excision boundary must not change rhs() at the
+    excision column or its immediate neighbor -- this is exactly the
+    Kreiss-Oliger masking fix: ko_dissipation_r has +/-2 reach, so without
+    masking Qp[:, i_exc:i_exc+2] would still depend on i_exc-1."""
+    g = Grid(rmin=1.5, rmax=100.0, Nmu=16, Nr=200, ghost=2, M=1.0)
+    rhs = TeukolskyRHS(g, M=1.0, a=0.0, m=2, dissipation=0.3,
+                        one_sided_horizon=True)
+    rng = np.random.default_rng(11)
+    psi = rng.standard_normal(g.shape) + 1j * rng.standard_normal(g.shape)
+    v   = rng.standard_normal(g.shape) + 1j * rng.standard_normal(g.shape)
+
+    dpsi0, dv0 = rhs.rhs(psi, v)
+
+    i = rhs.i_exc
+    psi_pert = psi.copy()
+    psi_pert[:, i - 1] += 1e3 * (1.0 + 1.0j)   # huge perturbation just inside
+    dpsi1, dv1 = rhs.rhs(psi_pert, v)
+
+    assert np.allclose(dpsi0[:, i:i + 2], dpsi1[:, i:i + 2])
+    assert np.allclose(dv0[:, i:i + 2],   dv1[:, i:i + 2])
 
 
 def test_dissipation_changes_rhs():

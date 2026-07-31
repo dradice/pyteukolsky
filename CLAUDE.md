@@ -83,6 +83,19 @@ Plus two leaf modules: `initialdata.py` (`swsh`, `gaussian_pulse`) and
   ghost fill: at the outermost interior cell it overrides `d_t psi = -d_r psi -
   psi/r` (same for `v`).
 
+- **One-sided excision stencil at the horizon (`one_sided_horizon=True`).**
+  `Grid.dr_onesided`/`Grid.drr_onesided` compute the same 2nd-order one-sided
+  formula already used for the array-edge padding in `dr`/`drr`, but at an
+  arbitrary column. `TeukolskyRHS` locates `self.i_exc`, the first interior
+  column with `r > r_+` (from the sign of `Delta`, robust against `rmin` below
+  `r_-` for Kerr), and — when the flag is set — overrides `psi_r`/`psi_rr`/
+  `v_r` at that column so the exterior domain never reads a ghost or
+  inside-horizon value. Because `dr`/`drr` are 3-point stencils this
+  single-column override is provably sufficient. Kreiss-Oliger dissipation has
+  a wider (±2) reach, so `ko_dissipation_r`'s contribution is also masked at
+  `i_exc:i_exc+2` when the flag is set — easy to miss, since without it the
+  dissipation term alone reintroduces the leak it's meant to prevent.
+
 ### Equation hierarchy
 
 Three nested forms, all defined and cross-checked in `check_equations.py`:
@@ -105,6 +118,17 @@ interior cell sits **outside** `r_+`. Interior cells inside the horizon land whe
 centered-difference stencil. Fit the ringdown after the initial burst and before
 the first Sommerfeld reflection from `rmax` (for the standard demo: window
 `[90, 130]M`).
+
+This `rmin` tuning is a workaround, not a fix — `TeukolskyRHS(...,
+one_sided_horizon=True)` is the real fix: it excises the inside-horizon
+columns from ever being read by the exterior domain (see the "One-sided
+excision stencil" bullet above), so the correct QNM frequency is recovered
+even from an aggressively-placed `rmin` that puts several interior columns
+inside the horizon (see `tests/test_validation.py::
+test_schwarz_qnm_frequency_aggressive_rmin_one_sided` and
+`scripts/stability_excision_test.py`). It defaults to `False`
+(`TeukolskyRHS`/`Grid` API) to stay opt-in; `run_example.py`/`single_mode.py`
+enable it by default.
 
 ## Repository notes
 

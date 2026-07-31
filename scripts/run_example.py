@@ -55,7 +55,9 @@ def parse_args():
     p.add_argument("--Nmu",      type=int,   default=32,
                    help="angular interior cells (default 32)")
     p.add_argument("--rmin",     type=float, default=1.5,
-                   help="inner radial boundary / M (default 1.5, inside horizon)")
+                   help="inner radial boundary / M (default 1.5, inside "
+                        "horizon -- safe because of one_sided_horizon "
+                        "excision, see below)")
     p.add_argument("--rmax",     type=float, default=100.0,
                    help="outer radial boundary / M (default 100)")
     p.add_argument("--r0",       type=float, default=15.0,
@@ -108,7 +110,13 @@ def run_simulation(args):
 
     g   = Grid(rmin=args.rmin, rmax=args.rmax, Nr=args.Nr, Nmu=args.Nmu,
                ghost=2, M=M)
-    rhs = TeukolskyRHS(g, M=M, a=args.a, m=args.m, dissipation=args.diss)
+    # one_sided_horizon=True excises the interior columns inside r_+ from
+    # ever being read by the exterior domain -- required since rmin=1.5
+    # (the default above) puts several interior columns inside the horizon,
+    # which otherwise causes exponential blow-up (see
+    # scripts/stability_excision_test.py and CLAUDE.md's rmin gotcha).
+    rhs = TeukolskyRHS(g, M=M, a=args.a, m=args.m, dissipation=args.diss,
+                        one_sided_horizon=True)
     evo = Evolution(rhs)
 
     # Time-symmetric 2D Gaussian: v = 0.
@@ -271,7 +279,7 @@ def make_animation_2d(data, path, fps=20):
 
     mesh = ax.pcolormesh(R_2d, TH_2d, psi_2d[0],
                          cmap="RdBu_r", vmin=-vmax, vmax=vmax,
-                         shading="nearest")
+                         shading="nearest", norm='symlog')
     fig.colorbar(mesh, ax=ax, label=r"$r\,\mathrm{Re}[\psi_m]$")
     tlabel = ax.text(0.5, 1.02, rf"$t = {t_arr[0]:.1f}\,M$",
                      transform=ax.transAxes, ha="center", fontsize=11)

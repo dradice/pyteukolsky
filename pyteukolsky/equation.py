@@ -21,7 +21,7 @@ import numpy as np
 
 
 class TeukolskyRHS:
-    def __init__(self, grid, M, a, m, dissipation=0.0):
+    def __init__(self, grid, M, a, m, dissipation=0.0, one_sided_horizon=False):
         """
         Parameters
         ----------
@@ -30,6 +30,10 @@ class TeukolskyRHS:
         a           : Kerr spin parameter (|a| < M)
         m           : azimuthal mode number (integer)
         dissipation : Kreiss-Oliger epsilon (default 0 = off)
+        one_sided_horizon : if True, use a one-sided (outward) FD stencil at
+            the first interior column outside r_+, so the exterior domain
+            never reads ghost or inside-horizon interior data (real excision;
+            see README "Inner (excision)"). Default False (opt-in).
         """
         self.grid = grid
         self.M = M
@@ -51,6 +55,28 @@ class TeukolskyRHS:
         # V = (2*mu - m)^2 / (1 - mu^2) - 2; ghost mu lie outside (-1,1) so
         # denominator is nonzero everywhere (no division by zero)
         self.V = (2*MU - m)**2 / (1 - MU**2) - 2
+
+        self.one_sided_horizon = one_sided_horizon
+        self.r_plus = M + np.sqrt(max(M**2 - a**2, 0.0))
+
+        # Delta is mu-independent (r-only); Delta = (r-r_+)(r-r_-) is also
+        # positive for r < r_- (inside the inner Cauchy horizon), so i_exc
+        # is taken as the start of the *last* contiguous Delta>0 run (the
+        # r > r_+ region), not the first Delta>0 column -- robust even if
+        # rmin is set below r_-. Consistent with evolve.py's cfl_dt
+        # Delta_eff masking.
+        Delta_col = self.Delta[0, grid.ghost:grid.ghost + grid.Nr].real
+        non_positive = np.flatnonzero(Delta_col <= 0)
+        i0 = int(non_positive[-1]) + 1 if non_positive.size > 0 else 0
+        n_good = grid.Nr - i0
+        MIN_GOOD_COLUMNS = 4   # drr_onesided needs i..i+3 in-bounds
+        if n_good < MIN_GOOD_COLUMNS:
+            raise ValueError(
+                f"Only {n_good} interior column(s) have r > r_+ = "
+                f"{self.r_plus:.4f}M (need >= {MIN_GOOD_COLUMNS}); "
+                f"increase rmax/Nr or raise rmin."
+            )
+        self.i_exc = grid.ghost + i0
 
     def rhs(self, psi, v):
         """Return (dpsi_dt, dv_dt) for state (psi, v).
@@ -78,6 +104,12 @@ class TeukolskyRHS:
         ang_psi = g.angular(psi)
         v_r     = g.dr(v)
 
+        if self.one_sided_horizon:
+            i = self.i_exc
+            psi_r[:, i]  = g.dr_onesided(psi, i)
+            psi_rr[:, i] = g.drr_onesided(psi, i)
+            v_r[:, i]    = g.dr_onesided(v, i)
+
         L = self.Delta * psi_rr + self.Cr * psi_r + ang_psi - self.V * psi
 
         dpsi_dt = v.copy()
@@ -92,7 +124,15 @@ class TeukolskyRHS:
 
         if self.dissipation > 0:
             eps = self.dissipation
-            dpsi_dt += g.ko_dissipation_r(psi, eps) + g.ko_dissipation_mu(psi, eps)
-            dv_dt   += g.ko_dissipation_r(v,   eps) + g.ko_dissipation_mu(v,   eps)
+            Qp = g.ko_dissipation_r(psi, eps)
+            Qv = g.ko_dissipation_r(v,   eps)
+            if self.one_sided_horizon:
+                # ko_dissipation_r has +/-2 reach; mask the two columns whose
+                # stencil would otherwise read inward of the excision boundary.
+                i = self.i_exc
+                Qp[:, i:i + 2] = 0.0
+                Qv[:, i:i + 2] = 0.0
+            dpsi_dt += Qp + g.ko_dissipation_mu(psi, eps)
+            dv_dt   += Qv + g.ko_dissipation_mu(v,   eps)
 
         return dpsi_dt, dv_dt

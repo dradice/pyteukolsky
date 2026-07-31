@@ -70,6 +70,62 @@ def test_drr_convergence():
 
 
 # -----------------------------------------------------------------------
+# Test dr_onesided / drr_onesided: near-horizon excision stencils
+# -----------------------------------------------------------------------
+
+def test_dr_onesided_convergence():
+    """dr_onesided(f, i) should be 2nd-order accurate for smooth f(r)."""
+    errors = []
+    for Nr in (50, 100, 200):
+        g = make_grid(Nr, 32)
+        i = g.ghost
+        R = g.R
+        f = np.sin(R / 10.0)
+        exact = np.cos(R[:, i] / 10.0) / 10.0
+        err = np.max(np.abs(g.dr_onesided(f, i) - exact))
+        errors.append(err)
+
+    ratio1 = errors[0] / errors[1]
+    ratio2 = errors[1] / errors[2]
+    assert ratio1 > 3.5, f"dr_onesided convergence (50->100) = {ratio1:.2f}, expected > 3.5"
+    assert ratio2 > 3.5, f"dr_onesided convergence (100->200) = {ratio2:.2f}, expected > 3.5"
+
+
+def test_drr_onesided_convergence():
+    """drr_onesided(f, i) should be 2nd-order accurate.
+
+    Uses finer starting resolutions than the other convergence tests here:
+    at i=g.ghost the leading-order error terms of the one-sided stencil
+    partially cancel at coarse Nr (ratio ~1.5 at Nr=50->100), only settling
+    into the asymptotic O(dx^2) regime (ratio -> 4) by Nr~200+.
+    """
+    errors = []
+    for Nr in (200, 400, 800):
+        g = make_grid(Nr, 32)
+        i = g.ghost
+        R = g.R
+        f = np.sin(R / 10.0)
+        exact = -np.sin(R[:, i] / 10.0) / 100.0
+        err = np.max(np.abs(g.drr_onesided(f, i) - exact))
+        errors.append(err)
+
+    ratio1 = errors[0] / errors[1]
+    ratio2 = errors[1] / errors[2]
+    assert ratio1 > 3.5, f"drr_onesided convergence (200->400) = {ratio1:.2f}, expected > 3.5"
+    assert ratio2 > 3.5, f"drr_onesided convergence (400->800) = {ratio2:.2f}, expected > 3.5"
+
+
+def test_onesided_matches_array_edge_stencil():
+    """dr_onesided/drr_onesided at column 0 must reproduce the pre-existing
+    one-sided edge-padding branch already used internally by dr()/drr()."""
+    g = make_grid(50, 32)
+    R = g.R
+    f = np.sin(R / 10.0)
+    assert np.allclose(g.dr_onesided(f, 0), g.dr(f)[:, 0])
+    assert np.allclose(g.drr_onesided(f, 0), g.drr(f)[:, 0])
+
+
+# -----------------------------------------------------------------------
 # Test angular: Legendre operator d/dmu[(1-mu^2) d/dmu f]
 # -----------------------------------------------------------------------
 

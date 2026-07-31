@@ -51,8 +51,10 @@ Usage:
     ~/local/miniforge/bin/python scripts/single_mode.py --r_extract 50 --stem mode22
 
 Grid note: rmin defaults to 1.99 M so every interior cell sits outside the
-horizon r_+ = 2M (see CLAUDE.md / test_validation.py); interior cells inside
-the horizon seed a slow instability that corrupts the ringdown.
+horizon r_+ = 2M (see CLAUDE.md / test_validation.py). one_sided_horizon=True
+(enabled below) excises any interior columns that do land inside the horizon
+from ever being read by the exterior domain, so a more aggressive --rmin no
+longer seeds the slow instability that used to corrupt the ringdown.
 """
 
 import argparse
@@ -121,7 +123,12 @@ def main():
     # ------------------------------------------------------------------
     g   = Grid(rmin=args.rmin, rmax=args.rmax, Nr=args.Nr, Nmu=args.Nmu,
                ghost=2, M=M)
-    rhs = TeukolskyRHS(g, M=M, a=0.0, m=args.m, dissipation=args.diss)
+    # one_sided_horizon=True excises interior columns inside r_+ from ever
+    # being read by the exterior domain, so the ringdown stays clean even if
+    # --rmin is set more aggressively than the safe default below (see
+    # scripts/stability_excision_test.py and CLAUDE.md's rmin gotcha).
+    rhs = TeukolskyRHS(g, M=M, a=0.0, m=args.m, dissipation=args.diss,
+                        one_sided_horizon=True)
     evo = Evolution(rhs)
 
     # Single angular eigenmode: ell=2, m=args.m spin-weighted spherical harmonic.

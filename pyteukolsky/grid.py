@@ -95,6 +95,22 @@ class Grid:
         ratio = self.d2rdx2 / self.drdx               # = 1 for log map
         return (fxx - ratio[np.newaxis, :] * fx) / self.drdx[np.newaxis, :]**2
 
+    def dr_onesided(self, f, i):
+        """First radial derivative at column i, forward one-sided (2nd order),
+        reading only columns i, i+1, i+2 -- never i-1. Used for the
+        near-horizon excision boundary (see TeukolskyRHS.one_sided_horizon)."""
+        fx_i = (-3 * f[:, i] + 4 * f[:, i + 1] - f[:, i + 2]) / (2.0 * self.dx)
+        return fx_i / self.drdx[i]
+
+    def drr_onesided(self, f, i):
+        """Second radial derivative at column i, forward one-sided (2nd
+        order), reading only columns i..i+3 -- never i-1."""
+        fxx_i = (2 * f[:, i] - 5 * f[:, i + 1] + 4 * f[:, i + 2]
+                 - f[:, i + 3]) / self.dx**2
+        fx_i = self.dr_onesided(f, i) * self.drdx[i]   # one-sided, not self.dr(f)
+        ratio_i = self.d2rdx2[i] / self.drdx[i]          # = 1 for log map
+        return (fxx_i - ratio_i * fx_i) / self.drdx[i]**2
+
     def angular(self, f):
         """Legendre operator d/dmu[(1-mu^2) d/dmu f], flux form.
 

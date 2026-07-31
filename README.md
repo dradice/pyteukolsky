@@ -205,7 +205,12 @@ stencils, two to support Kreiss–Oliger dissipation).
 - **Inner (excision).** Because the coordinates are horizon-penetrating and
   $r_\min<r_+$, all characteristics at the inner edge point into the hole and no
   physical boundary data is required. Inner radial ghosts are filled by
-  2nd-order extrapolation.
+  2nd-order extrapolation. This is only exact if every *interior* cell also
+  sits at $r>r_+$ (see CLAUDE.md's `rmin` gotcha); `TeukolskyRHS(...,
+  one_sided_horizon=True)` makes the excision exact regardless of `rmin` by
+  overriding the derivative stencil at the first interior column outside
+  $r_+$ with a one-sided (outward-only) form, so that column — and hence the
+  whole exterior domain — never reads a value from inside the horizon.
 - **Outer (Sommerfeld).** An outgoing/radiative condition
   ($\partial_t\psi\approx-\partial_r\psi-\psi/r$) is applied via the outer radial
   ghosts. It is exact only as $r\to\infty$; choose $r_\max$ so reflections arrive

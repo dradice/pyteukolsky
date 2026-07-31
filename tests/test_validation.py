@@ -49,11 +49,12 @@ def _interior_mu(g):
 
 
 def run_schwarz(Nr, Nmu=16, t_final=130.0, cfl=0.45, diss=0.1,
-                r_extract=30.0):
+                r_extract=30.0, rmin=RMIN, one_sided_horizon=False):
     """Run Schwarzschild a=0 m=2 Gaussian pulse; return (times, psi_22)."""
     M = 1.0
-    g   = make_grid(Nr=Nr, Nmu=Nmu)
-    rhs = TeukolskyRHS(g, M=M, a=0.0, m=2, dissipation=diss)
+    g   = make_grid(Nr=Nr, Nmu=Nmu, rmin=rmin)
+    rhs = TeukolskyRHS(g, M=M, a=0.0, m=2, dissipation=diss,
+                        one_sided_horizon=one_sided_horizon)
     evo = Evolution(rhs)
     psi0 = gaussian_pulse(g, r0=10.0, sigma_r=2.0, ell=2, m=2, spin=-2)
     evo.set_initial_data(psi0, psi0, dt_init=1e-3)
@@ -202,6 +203,45 @@ def test_schwarz_qnm_frequency():
     """
     M = 1.0
     times, psi_22 = run_schwarz(Nr=100, t_final=140.0)
+
+    omega_R, omega_I = fit_qnm_frequency(times, psi_22.real,
+                                         t_start=90.0, t_end=130.0)
+
+    assert abs(M * omega_R - 0.3737) < 0.02, \
+        f"Mω_R = {M*omega_R:.4f}, expected 0.3737 ± 0.02"
+    assert abs(M * omega_I + 0.0890) < 0.015, \
+        f"Mω_I = {M*omega_I:.4f}, expected -0.0890 ± 0.015"
+
+
+# ---------------------------------------------------------------------------
+# One-sided horizon excision: non-regression + positive-proof (~10 s)
+# ---------------------------------------------------------------------------
+
+def test_schwarz_qnm_frequency_one_sided_horizon():
+    """Non-regression: one_sided_horizon=True on the already-safe rmin=1.99
+    grid (i_exc == grid.ghost here) must still recover the published QNM
+    frequency within the same tolerances as the centered-stencil baseline."""
+    M = 1.0
+    times, psi_22 = run_schwarz(Nr=100, t_final=140.0, one_sided_horizon=True)
+
+    omega_R, omega_I = fit_qnm_frequency(times, psi_22.real,
+                                         t_start=90.0, t_end=130.0)
+
+    assert abs(M * omega_R - 0.3737) < 0.02, \
+        f"Mω_R = {M*omega_R:.4f}, expected 0.3737 ± 0.02"
+    assert abs(M * omega_I + 0.0890) < 0.015, \
+        f"Mω_I = {M*omega_I:.4f}, expected -0.0890 ± 0.015"
+
+
+def test_schwarz_qnm_frequency_aggressive_rmin_one_sided():
+    """Positive proof: rmin=1.5 (inside r_+=2M, run_example.py's own default)
+    puts several interior columns inside the horizon. With
+    one_sided_horizon=True the excision boundary is found dynamically and the
+    correct QNM frequency is still recovered from a grid that is documented
+    as unsafe for the centered-stencil path."""
+    M = 1.0
+    times, psi_22 = run_schwarz(Nr=200, t_final=140.0, rmin=1.5,
+                                one_sided_horizon=True)
 
     omega_R, omega_I = fit_qnm_frequency(times, psi_22.real,
                                          t_start=90.0, t_end=130.0)

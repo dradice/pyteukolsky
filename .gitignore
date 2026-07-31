@@ -18,3 +18,6 @@ dist/
 # plot_waveforms.py output files
 *_psi4_r*.png
 *_strain_r*.png
+
+# stability_excision_test.py output files
+*_good_max.png
