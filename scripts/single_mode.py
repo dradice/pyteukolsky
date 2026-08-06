@@ -102,6 +102,12 @@ def parse_args():
                    help="CFL factor (default 0.45)")
     p.add_argument("--diss",      type=float, default=0.1,
                    help="Kreiss-Oliger dissipation ε (default 0.1)")
+    p.add_argument("--order",     type=int,   default=2, choices=(2, 4),
+                   help="radial finite-difference order (default 2; 4 is "
+                        "opt-in, see Grid's module docstring)")
+    p.add_argument("--ghost",     type=int,   default=None,
+                   help="ghost-cell width (default: resolved from --order, "
+                        "2 for order=2, 3 for order=4)")
     p.add_argument("--fit_start", type=float, default=None,
                    help="ringdown fit window start / M "
                         "(default: after the burst, ~2*r_extract + 30)")
@@ -122,7 +128,7 @@ def main():
     # Grid, physics, initial data
     # ------------------------------------------------------------------
     g   = Grid(rmin=args.rmin, rmax=args.rmax, Nr=args.Nr, Nmu=args.Nmu,
-               ghost=2, M=M)
+               ghost=args.ghost, M=M, order=args.order)
     # one_sided_horizon=True excises interior columns inside r_+ from ever
     # being read by the exterior domain, so the ringdown stays clean even if
     # --rmin is set more aggressively than the safe default below (see
@@ -139,7 +145,7 @@ def main():
     evo.add_detector(args.r_extract)
 
     r_int = g.r[g.ghost:g.ghost + g.Nr]
-    print(f"Grid   : Nr={args.Nr}, Nmu={args.Nmu}, "
+    print(f"Grid   : Nr={args.Nr}, Nmu={args.Nmu}, order={g.order}, ghost={g.ghost}, "
           f"r ∈ [{r_int[0].real:.2f}, {r_int[-1].real:.2f}] M")
     print(f"Physics: M={M}, a=0 (Schwarzschild), m={args.m}, r_+={r_plus:.2f} M")
     print(f"Mode   : ℓ=2, m={args.m}, n=0 fundamental QNM")
