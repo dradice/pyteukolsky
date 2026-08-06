@@ -7,6 +7,7 @@ that the L-infinity error ratio is ≥ 3.5 (ideal: 4).
 """
 
 import numpy as np
+import pytest
 import sys
 import os
 
@@ -253,6 +254,178 @@ def test_log_map():
     g = make_grid(50, 32, M=1.0)
     assert np.allclose(g.drdx, g.r)
     assert np.allclose(g.d2rdx2, g.r)
+
+
+# ===========================================================================
+# order=4 opt-in radial finite differences
+#
+# order=2 is untouched (all tests above still construct order=2 grids, most
+# via the ghost=2 default resolution). These tests exercise the new order=4
+# code paths in isolation.
+# ===========================================================================
+
+def make_grid4(Nr, Nmu, rmin=2.0, rmax=100.0, M=1.0, ghost=None):
+    return Grid(rmin=rmin, rmax=rmax, Nmu=Nmu, Nr=Nr, M=M, order=4, ghost=ghost)
+
+
+def test_order4_default_ghost_is_3():
+    g = make_grid4(60, 32)
+    assert g.ghost == 3
+    assert g.order == 4
+
+
+def test_order2_default_ghost_is_2():
+    """ghost=None still resolves to 2 for the (default) order=2 path."""
+    g = Grid(rmin=2.0, rmax=100.0, Nmu=32, Nr=60, M=1.0)
+    assert g.ghost == 2
+    assert g.order == 2
+
+
+def test_order4_requires_ghost_at_least_3():
+    with pytest.raises(ValueError):
+        Grid(rmin=2.0, rmax=100.0, Nmu=32, Nr=60, M=1.0, order=4, ghost=2)
+
+
+def test_order2_still_accepts_ghost_2_explicitly():
+    """Existing callers passing ghost=2 explicitly at order=2 are unaffected."""
+    g = Grid(rmin=2.0, rmax=100.0, Nmu=32, Nr=60, ghost=2, M=1.0)
+    assert g.ghost == 2
+
+
+def test_invalid_order_raises():
+    with pytest.raises(ValueError):
+        Grid(rmin=2.0, rmax=100.0, Nmu=32, Nr=60, M=1.0, order=3)
+
+
+def test_dr_order4_convergence():
+    """dr(f) at order=4 should converge at ~4th order (ratio > 14)."""
+    errors = []
+    for Nr in (120, 240, 480):
+        g = make_grid4(Nr, 32)
+        R = g.R
+        f = np.sin(R / 10.0)
+        exact = np.cos(R / 10.0) / 10.0
+        errors.append(interior_error(g, g.dr(f), exact))
+
+    ratio1 = errors[0] / errors[1]
+    ratio2 = errors[1] / errors[2]
+    assert ratio1 > 14, f"order=4 dr ratio (120->240) = {ratio1:.2f}, expected > 14"
+    assert ratio2 > 14, f"order=4 dr ratio (240->480) = {ratio2:.2f}, expected > 14"
+
+
+def test_drr_order4_convergence():
+    """drr(f) at order=4 should converge at ~4th order (ratio > 14)."""
+    errors = []
+    for Nr in (120, 240, 480):
+        g = make_grid4(Nr, 32)
+        R = g.R
+        f = np.sin(R / 10.0)
+        exact = -np.sin(R / 10.0) / 100.0
+        errors.append(interior_error(g, g.drr(f), exact))
+
+    ratio1 = errors[0] / errors[1]
+    ratio2 = errors[1] / errors[2]
+    assert ratio1 > 14, f"order=4 drr ratio (120->240) = {ratio1:.2f}, expected > 14"
+    assert ratio2 > 14, f"order=4 drr ratio (240->480) = {ratio2:.2f}, expected > 14"
+
+
+def test_dr_onesided_order4_convergence():
+    """dr_onesided(f, i) at order=4 should converge at ~4th order (ratio > 14)."""
+    errors = []
+    for Nr in (120, 240, 480):
+        g = make_grid4(Nr, 32)
+        i = g.ghost
+        R = g.R
+        f = np.sin(R / 10.0)
+        exact = np.cos(R[:, i] / 10.0) / 10.0
+        err = np.max(np.abs(g.dr_onesided(f, i) - exact))
+        errors.append(err)
+
+    ratio1 = errors[0] / errors[1]
+    ratio2 = errors[1] / errors[2]
+    assert ratio1 > 14, f"order=4 dr_onesided ratio (120->240) = {ratio1:.2f}"
+    assert ratio2 > 14, f"order=4 dr_onesided ratio (240->480) = {ratio2:.2f}"
+
+
+def test_drr_onesided_order4_convergence():
+    """drr_onesided(f, i) at order=4 should converge at ~4th order (ratio > 14)."""
+    errors = []
+    for Nr in (120, 240, 480):
+        g = make_grid4(Nr, 32)
+        i = g.ghost
+        R = g.R
+        f = np.sin(R / 10.0)
+        exact = -np.sin(R[:, i] / 10.0) / 100.0
+        err = np.max(np.abs(g.drr_onesided(f, i) - exact))
+        errors.append(err)
+
+    ratio1 = errors[0] / errors[1]
+    ratio2 = errors[1] / errors[2]
+    assert ratio1 > 14, f"order=4 drr_onesided ratio (120->240) = {ratio1:.2f}"
+    assert ratio2 > 14, f"order=4 drr_onesided ratio (240->480) = {ratio2:.2f}"
+
+
+def test_order4_onesided_matches_array_edge_stencil():
+    """At order=4, dr_onesided/drr_onesided at column 0 must reproduce the
+    forward one-sided edge-padding branch used internally by dr()/drr()
+    (mirrors test_onesided_matches_array_edge_stencil for order=2)."""
+    g = make_grid4(60, 32)
+    R = g.R
+    f = np.sin(R / 10.0)
+    assert np.allclose(g.dr_onesided(f, 0), g.dr(f)[:, 0])
+    assert np.allclose(g.drr_onesided(f, 0), g.drr(f)[:, 0])
+
+
+def test_order4_ghost_extrapolation_exact_for_quartic():
+    """Inner and outer radial ghost extrapolation at order=4 is exact for
+    degree-4 polynomials in x (mirrors test_fill_ghosts_r_inner_extrapolation,
+    which checks the analogous degree-2 exactness at order=2)."""
+    g = make_grid4(60, 32)
+    gh = g.ghost
+    x = np.log(g.R / g.M)
+    f = x**4 - 2 * x**3 + x - 5   # quartic in x -> exact for the order=4 stencil
+    expected = f.copy()
+    f[:, :gh] = 0.0
+    f[:, -gh:] = 0.0
+    g.fill_ghosts_r(f)
+    err_inner = np.max(np.abs(f[:, :gh] - expected[:, :gh]))
+    err_outer = np.max(np.abs(f[:, -gh:] - expected[:, -gh:]))
+    assert err_inner < 1e-8, f"Inner ghost (order=4) extrapolation error = {err_inner:.2e}"
+    assert err_outer < 1e-8, f"Outer ghost (order=4) extrapolation error = {err_outer:.2e}"
+
+
+def test_ko_dissipation_r_order4_is_dissipative():
+    """The order=4 (6th-difference) KO operator must damp a high-frequency
+    (Nyquist, alternating-sign) mode, not amplify it.
+
+    This directly guards a sign-flip trap: for a Fourier mode, D4 -> +16
+    sin^4 but D6 -> -64 sin^6, so the 6th-difference term needs a '+' (not
+    '-') to stay dissipative. A wrong sign here produces slow *growth* that
+    is easy to mistake for a physical instability -- so this test is a
+    numerical check, not a trust-the-algebra one.
+    """
+    g = make_grid4(80, 8)
+    n = g.shape[1]
+    f = np.zeros(g.shape, dtype=complex)
+    f[:, :] = (-1.0) ** np.arange(n)[np.newaxis, :]   # Nyquist mode
+
+    eps = 0.02
+    Q = g.ko_dissipation_r(f, eps)
+    dt_small = 1e-3
+    sl = g.interior
+    norm0 = np.sqrt(np.sum(np.abs(f[sl])**2))
+    norm1 = np.sqrt(np.sum(np.abs((f + dt_small * Q)[sl])**2))
+    assert norm1 < norm0, (
+        f"order=4 KO term did not reduce the L2 norm of a Nyquist mode: "
+        f"norm0={norm0:.6f}, norm1={norm1:.6f} (sign flip?)"
+    )
+
+
+def test_ko_dissipation_r_order4_zero_at_zero_epsilon():
+    g = make_grid4(60, 8)
+    f = np.random.default_rng(3).standard_normal(g.shape) + 0j
+    Q = g.ko_dissipation_r(f, 0.0)
+    assert np.allclose(Q, 0.0)
 
 
 if __name__ == "__main__":

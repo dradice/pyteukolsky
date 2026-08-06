@@ -69,14 +69,26 @@ class TeukolskyRHS:
         non_positive = np.flatnonzero(Delta_col <= 0)
         i0 = int(non_positive[-1]) + 1 if non_positive.size > 0 else 0
         n_good = grid.Nr - i0
-        MIN_GOOD_COLUMNS = 4   # drr_onesided needs i..i+3 in-bounds
+        # drr_onesided needs i..i+3 in-bounds at order=2. At order=4 the
+        # one-sided override widens to *two* columns (i_exc and i_exc+1,
+        # since the centered 5-point stencils reach inward of i_exc from
+        # i_exc+1 too), and drr_onesided at column i_exc+1 reads up to
+        # (i_exc+1)+5 = i_exc+6,
+        # so the minimum column count derives from grid.order rather than
+        # being a single hardcoded number.
+        MIN_GOOD_COLUMNS = 4 if grid.order == 2 else 7
         if n_good < MIN_GOOD_COLUMNS:
             raise ValueError(
                 f"Only {n_good} interior column(s) have r > r_+ = "
-                f"{self.r_plus:.4f}M (need >= {MIN_GOOD_COLUMNS}); "
-                f"increase rmax/Nr or raise rmin."
+                f"{self.r_plus:.4f}M (need >= {MIN_GOOD_COLUMNS} at "
+                f"order={grid.order}); increase rmax/Nr or raise rmin."
             )
         self.i_exc = grid.ghost + i0
+        # Number of columns overridden by the one-sided excision stencil:
+        # 1 at order=2 (3-point stencil only reaches from i_exc itself),
+        # 2 at order=4 (5-point centered stencils at i_exc+1 also reach
+        # inward of i_exc).
+        self._n_excision_cols = 1 if grid.order == 2 else 2
 
     def rhs(self, psi, v):
         """Return (dpsi_dt, dv_dt) for state (psi, v).
@@ -105,10 +117,13 @@ class TeukolskyRHS:
         v_r     = g.dr(v)
 
         if self.one_sided_horizon:
-            i = self.i_exc
-            psi_r[:, i]  = g.dr_onesided(psi, i)
-            psi_rr[:, i] = g.drr_onesided(psi, i)
-            v_r[:, i]    = g.dr_onesided(v, i)
+            # Override at i_exc (order=2) or i_exc and i_exc+1 (order=4) --
+            # width derives from self._n_excision_cols, itself derived from
+            # grid.order in __init__, so the order=2 path is untouched.
+            for i in range(self.i_exc, self.i_exc + self._n_excision_cols):
+                psi_r[:, i]  = g.dr_onesided(psi, i)
+                psi_rr[:, i] = g.drr_onesided(psi, i)
+                v_r[:, i]    = g.dr_onesided(v, i)
 
         L = self.Delta * psi_rr + self.Cr * psi_r + ang_psi - self.V * psi
 
@@ -127,11 +142,15 @@ class TeukolskyRHS:
             Qp = g.ko_dissipation_r(psi, eps)
             Qv = g.ko_dissipation_r(v,   eps)
             if self.one_sided_horizon:
-                # ko_dissipation_r has +/-2 reach; mask the two columns whose
-                # stencil would otherwise read inward of the excision boundary.
+                # ko_dissipation_r has +/-2 reach at order=2 (mask 2 columns)
+                # or +/-3 reach at order=4 (mask 3 columns); either way this
+                # is the width whose stencil would otherwise read inward of
+                # the excision boundary. Derived from grid.order via
+                # self._n_excision_cols so the order=2 path is untouched.
                 i = self.i_exc
-                Qp[:, i:i + 2] = 0.0
-                Qv[:, i:i + 2] = 0.0
+                ko_width = self._n_excision_cols + 1
+                Qp[:, i:i + ko_width] = 0.0
+                Qv[:, i:i + ko_width] = 0.0
             dpsi_dt += Qp + g.ko_dissipation_mu(psi, eps)
             dv_dt   += Qv + g.ko_dissipation_mu(v,   eps)
 

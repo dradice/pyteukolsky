@@ -8,27 +8,53 @@ horizon and a coarse far zone.
 Angular coordinate: staggered uniform mu = cos(theta) in (-1, 1),
   mu_j = -1 + (j - 0.5) * dmu, j = 1..Nmu.
 
-Ghost width is 2 cells per side in each direction.
+Ghost width is 2 cells per side in each direction for order=2 (default),
+3 cells per side for order=4 (opt-in radial finite differences). The
+angular operator (`angular`,
+`fill_ghosts_mu`, `ko_dissipation_mu`) is always 2nd order regardless of
+`order`; only the radial stencils (`dr`, `drr`, `dr_onesided`,
+`drr_onesided`, `fill_ghosts_r`, `ko_dissipation_r`) branch on it.
 """
 
 import numpy as np
 
 
 class Grid:
-    def __init__(self, rmin, rmax, Nmu, Nr, ghost=2, M=1.0):
+    def __init__(self, rmin, rmax, Nmu, Nr, ghost=None, M=1.0, order=2):
         """
         Parameters
         ----------
         rmin, rmax : physical radial extent (rmin < r_horizon for excision)
         Nmu        : number of interior angular cells
         Nr         : number of interior radial cells
-        ghost      : ghost-cell width (default 2)
+        ghost      : ghost-cell width. Default (None) resolves to 2 for
+                     order=2, 3 for order=4. order=4 requires ghost >= 3
+                     (the centered 4th-order stencils reach +/-2, and the
+                     4th-order Kreiss-Oliger 6th-difference operator reaches
+                     +/-3).
         M          : mass parameter for the log map r = M * exp(x)
+        order      : radial finite-difference order, 2 (default) or 4.
+                     order=4 is additive/opt-in -- see grid.py module
+                     docstring.
         """
+        if order not in (2, 4):
+            raise ValueError(f"order must be 2 or 4, got {order!r}")
+        if ghost is None:
+            ghost = 2 if order == 2 else 3
+        if order == 4 and ghost < 3:
+            raise ValueError(
+                f"order=4 requires ghost >= 3 (got ghost={ghost}): the "
+                "centered 4th-order stencils reach +/-2 cells and the "
+                "4th-order Kreiss-Oliger 6th-difference operator reaches "
+                "+/-3 cells."
+            )
+        self.order = order
         self.ghost = ghost
         self.Nr = Nr
         self.Nmu = Nmu
         self.M = M
+        self.rmin = rmin
+        self.rmax = rmax
 
         # --- radial coordinate (log map r = M exp(x)) ---
         xmin = np.log(rmin / M)
@@ -71,14 +97,54 @@ class Grid:
     # Finite-difference operators
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # order=4 one-sided (forward/backward) stencils in x -- private helpers
+    # ------------------------------------------------------------------
+    # Forward one-sided 1st/2nd derivative in x, reading i..i+4 / i..i+5.
+    # "Backward" is the mirror image:
+    # for the (odd) 1st derivative the coefficients are negated and the
+    # read direction reversed; for the (even) 2nd derivative the
+    # coefficients are unchanged, only the read direction reverses.
+
+    def _dfdx_forward4(self, f, i):
+        return (-25 * f[:, i] + 48 * f[:, i + 1] - 36 * f[:, i + 2]
+                 + 16 * f[:, i + 3] - 3 * f[:, i + 4]) / (12.0 * self.dx)
+
+    def _dfdx_backward4(self, f, i):
+        return (25 * f[:, i] - 48 * f[:, i - 1] + 36 * f[:, i - 2]
+                 - 16 * f[:, i - 3] + 3 * f[:, i - 4]) / (12.0 * self.dx)
+
+    def _d2fdx2_forward4(self, f, i):
+        return (45 * f[:, i] - 154 * f[:, i + 1] + 214 * f[:, i + 2]
+                 - 156 * f[:, i + 3] + 61 * f[:, i + 4]
+                 - 10 * f[:, i + 5]) / (12.0 * self.dx**2)
+
+    def _d2fdx2_backward4(self, f, i):
+        return (45 * f[:, i] - 154 * f[:, i - 1] + 214 * f[:, i - 2]
+                 - 156 * f[:, i - 3] + 61 * f[:, i - 4]
+                 - 10 * f[:, i - 5]) / (12.0 * self.dx**2)
+
     def dr(self, f):
         """First radial derivative d/dr f, using d/dr = (1/drdx) d/dx."""
         fx = np.empty_like(f)
-        # Second-order centered difference in x for interior + 1 ghost band
-        fx[:, 1:-1] = (f[:, 2:] - f[:, :-2]) / (2.0 * self.dx)
-        # One-sided at boundaries (needed for outermost ghost only)
-        fx[:, 0] = (-3 * f[:, 0] + 4 * f[:, 1] - f[:, 2]) / (2.0 * self.dx)
-        fx[:, -1] = (3 * f[:, -1] - 4 * f[:, -2] + f[:, -3]) / (2.0 * self.dx)
+        if self.order == 2:
+            # Second-order centered difference in x for interior + 1 ghost band
+            fx[:, 1:-1] = (f[:, 2:] - f[:, :-2]) / (2.0 * self.dx)
+            # One-sided at boundaries (needed for outermost ghost only)
+            fx[:, 0] = (-3 * f[:, 0] + 4 * f[:, 1] - f[:, 2]) / (2.0 * self.dx)
+            fx[:, -1] = (3 * f[:, -1] - 4 * f[:, -2] + f[:, -3]) / (2.0 * self.dx)
+        else:
+            # Fourth-order centered difference, valid for columns with a
+            # full +/-2 stencil in bounds; the outermost 2 columns on each
+            # side (always ghost cells for ghost>=3) fall back to the
+            # one-sided forward/backward stencils.
+            n = f.shape[1]
+            fx[:, 2:-2] = (-f[:, 4:] + 8 * f[:, 3:-1] - 8 * f[:, 1:-3]
+                           + f[:, :-4]) / (12.0 * self.dx)
+            fx[:, 0]  = self._dfdx_forward4(f, 0)
+            fx[:, 1]  = self._dfdx_forward4(f, 1)
+            fx[:, -1] = self._dfdx_backward4(f, n - 1)
+            fx[:, -2] = self._dfdx_backward4(f, n - 2)
         return fx / self.drdx[np.newaxis, :]
 
     def drr(self, f):
@@ -88,25 +154,42 @@ class Grid:
         For the log map drdx = d2rdx2 = r, so (d2rdx2/drdx) = 1.
         """
         fxx = np.empty_like(f)
-        fxx[:, 1:-1] = (f[:, 2:] - 2 * f[:, 1:-1] + f[:, :-2]) / self.dx**2
-        fxx[:, 0] = (2 * f[:, 0] - 5 * f[:, 1] + 4 * f[:, 2] - f[:, 3]) / self.dx**2
-        fxx[:, -1] = (2 * f[:, -1] - 5 * f[:, -2] + 4 * f[:, -3] - f[:, -4]) / self.dx**2
+        if self.order == 2:
+            fxx[:, 1:-1] = (f[:, 2:] - 2 * f[:, 1:-1] + f[:, :-2]) / self.dx**2
+            fxx[:, 0] = (2 * f[:, 0] - 5 * f[:, 1] + 4 * f[:, 2] - f[:, 3]) / self.dx**2
+            fxx[:, -1] = (2 * f[:, -1] - 5 * f[:, -2] + 4 * f[:, -3] - f[:, -4]) / self.dx**2
+        else:
+            n = f.shape[1]
+            fxx[:, 2:-2] = (-f[:, 4:] + 16 * f[:, 3:-1] - 30 * f[:, 2:-2]
+                            + 16 * f[:, 1:-3] - f[:, :-4]) / (12.0 * self.dx**2)
+            fxx[:, 0]  = self._d2fdx2_forward4(f, 0)
+            fxx[:, 1]  = self._d2fdx2_forward4(f, 1)
+            fxx[:, -1] = self._d2fdx2_backward4(f, n - 1)
+            fxx[:, -2] = self._d2fdx2_backward4(f, n - 2)
         fx = self.dr(f) * self.drdx[np.newaxis, :]   # recover f_x = drdx * f_r
         ratio = self.d2rdx2 / self.drdx               # = 1 for log map
         return (fxx - ratio[np.newaxis, :] * fx) / self.drdx[np.newaxis, :]**2
 
     def dr_onesided(self, f, i):
-        """First radial derivative at column i, forward one-sided (2nd order),
-        reading only columns i, i+1, i+2 -- never i-1. Used for the
-        near-horizon excision boundary (see TeukolskyRHS.one_sided_horizon)."""
-        fx_i = (-3 * f[:, i] + 4 * f[:, i + 1] - f[:, i + 2]) / (2.0 * self.dx)
+        """First radial derivative at column i, forward one-sided, reading
+        only columns i..i+2 (order=2, 2nd order) or i..i+4 (order=4, 4th
+        order) -- never i-1. Used for the near-horizon excision boundary
+        (see TeukolskyRHS.one_sided_horizon)."""
+        if self.order == 2:
+            fx_i = (-3 * f[:, i] + 4 * f[:, i + 1] - f[:, i + 2]) / (2.0 * self.dx)
+        else:
+            fx_i = self._dfdx_forward4(f, i)
         return fx_i / self.drdx[i]
 
     def drr_onesided(self, f, i):
-        """Second radial derivative at column i, forward one-sided (2nd
-        order), reading only columns i..i+3 -- never i-1."""
-        fxx_i = (2 * f[:, i] - 5 * f[:, i + 1] + 4 * f[:, i + 2]
-                 - f[:, i + 3]) / self.dx**2
+        """Second radial derivative at column i, forward one-sided, reading
+        only columns i..i+3 (order=2, 2nd order) or i..i+5 (order=4, 4th
+        order) -- never i-1."""
+        if self.order == 2:
+            fxx_i = (2 * f[:, i] - 5 * f[:, i + 1] + 4 * f[:, i + 2]
+                     - f[:, i + 3]) / self.dx**2
+        else:
+            fxx_i = self._d2fdx2_forward4(f, i)
         fx_i = self.dr_onesided(f, i) * self.drdx[i]   # one-sided, not self.dr(f)
         ratio_i = self.d2rdx2[i] / self.drdx[i]          # = 1 for log map
         return (fxx_i - ratio_i * fx_i) / self.drdx[i]**2
@@ -140,23 +223,44 @@ class Grid:
     def fill_ghosts_r(self, f, outer="sommerfeld", dt=None):
         """Fill radial ghost cells.
 
-        Inner (excision): 2nd-order extrapolation from interior.
+        Inner (excision): extrapolation from interior, exact for degree-2
+          (order=2) or degree-4 (order=4) polynomials in x.
         Outer (Sommerfeld): d_t psi ~ -d_r psi - psi/r (approximate outgoing).
-          When outer='extrapolate' or dt is None, uses 2nd-order extrapolation.
+          When outer='extrapolate' or dt is None, uses the same-order
+          extrapolation as the inner boundary.
         """
         g = self.ghost
 
-        # Inner ghosts: extrapolate from interior
-        # ghost at g-1: use interior[g], g+1, g+2
-        f[:, g - 1] = 3 * f[:, g] - 3 * f[:, g + 1] + f[:, g + 2]
-        if g >= 2:
-            f[:, g - 2] = 3 * f[:, g - 1] - 3 * f[:, g] + f[:, g + 1]
+        if self.order == 2:
+            # Inner ghosts: extrapolate from interior
+            # ghost at g-1: use interior[g], g+1, g+2
+            f[:, g - 1] = 3 * f[:, g] - 3 * f[:, g + 1] + f[:, g + 2]
+            if g >= 2:
+                f[:, g - 2] = 3 * f[:, g - 1] - 3 * f[:, g] + f[:, g + 1]
 
-        # Outer ghosts: extrapolate (Sommerfeld applied in RHS, not here)
-        n = self.Nr + g   # index of last interior cell
-        f[:, n] = 3 * f[:, n - 1] - 3 * f[:, n - 2] + f[:, n - 3]
-        if g >= 2:
-            f[:, n + 1] = 3 * f[:, n] - 3 * f[:, n - 1] + f[:, n - 2]
+            # Outer ghosts: extrapolate (Sommerfeld applied in RHS, not here)
+            n = self.Nr + g   # index of last interior cell
+            f[:, n] = 3 * f[:, n - 1] - 3 * f[:, n - 2] + f[:, n - 3]
+            if g >= 2:
+                f[:, n + 1] = 3 * f[:, n] - 3 * f[:, n - 1] + f[:, n - 2]
+        else:
+            # Degree-4 extrapolation (exact for quartic polynomials in x):
+            #   f[j] = 5 f[j+1] - 10 f[j+2] + 10 f[j+3] - 5 f[j+4] + f[j+5]
+            # Recurse outward one ghost column at a time (same structure as
+            # the order=2 branch above, generalized to arbitrary ghost >= 3):
+            # each new ghost column is filled using the g+1..g+5 (or the
+            # already-filled ghost columns closer to the interior) nearest
+            # values, exactly as fill_ghosts_r already does for order=2.
+            for k in range(1, g + 1):
+                j = g - k
+                f[:, j] = (5 * f[:, j + 1] - 10 * f[:, j + 2]
+                           + 10 * f[:, j + 3] - 5 * f[:, j + 4] + f[:, j + 5])
+
+            n = self.Nr + g   # index of first outer ghost cell
+            for k in range(1, g + 1):
+                j = n + k - 1
+                f[:, j] = (5 * f[:, j - 1] - 10 * f[:, j - 2]
+                           + 10 * f[:, j - 3] - 5 * f[:, j - 4] + f[:, j - 5])
 
         return f
 
@@ -181,16 +285,32 @@ class Grid:
         return f
 
     # ------------------------------------------------------------------
-    # Kreiss-Oliger dissipation (4th-difference, 2nd-order scheme)
+    # Kreiss-Oliger dissipation
     # ------------------------------------------------------------------
 
     def ko_dissipation_r(self, f, epsilon):
-        """KO dissipation in radial direction: -eps/16 * fourth difference."""
+        """KO dissipation in radial direction.
+
+        order=2: -eps/16 * fourth difference (unchanged).
+        order=4: +eps/64 * sixth difference, stencil (1,-6,15,-20,15,-6,1).
+          Note the SIGN FLIP relative to the 4th-difference case: for a
+          Fourier mode, D4 -> +16 sin^4(kh/2) but D6 -> -64 sin^6(kh/2), so
+          the 6th-difference term needs a '+' to remain dissipative (see
+          test_ko_dissipation_r_order4_* below). Getting this wrong
+          produces a slowly *growing* solution that is easy to mistake for
+          a physical instability.
+        """
         Q = np.zeros_like(f)
-        Q[:, 2:-2] = -(epsilon / 16.0) * (
-            f[:, :-4] - 4 * f[:, 1:-3] + 6 * f[:, 2:-2]
-            - 4 * f[:, 3:-1] + f[:, 4:]
-        ) / self.dx
+        if self.order == 2:
+            Q[:, 2:-2] = -(epsilon / 16.0) * (
+                f[:, :-4] - 4 * f[:, 1:-3] + 6 * f[:, 2:-2]
+                - 4 * f[:, 3:-1] + f[:, 4:]
+            ) / self.dx
+        else:
+            Q[:, 3:-3] = (epsilon / 64.0) * (
+                f[:, :-6] - 6 * f[:, 1:-5] + 15 * f[:, 2:-4] - 20 * f[:, 3:-3]
+                + 15 * f[:, 4:-2] - 6 * f[:, 5:-1] + f[:, 6:]
+            ) / self.dx
         return Q
 
     def ko_dissipation_mu(self, f, epsilon):
