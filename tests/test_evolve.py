@@ -23,7 +23,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pyteukolsky.grid import Grid
 from pyteukolsky.equation import TeukolskyRHS
-from pyteukolsky.evolve import Evolution
+from pyteukolsky.evolve import Evolution, SnapshotWriter, n_evolve_steps
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +427,243 @@ def test_save_snapshots_empty():
         evo.save_snapshots(path)
         loaded = np.load(path + ".npz")
         assert loaded['psi'].shape[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# provenance() (§4.4)
+# ---------------------------------------------------------------------------
+
+def test_provenance_core_fields():
+    evo, g, rhs = make_evo(a=0.3, m=2)
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo.cfl_dt(cfl=0.3)
+    evo.evolve(t_final=3 * dt, cfl=0.3, dt=dt, record_every=2)
+    prov = evo.provenance()
+    for key, expected in [
+        ('M', rhs.M), ('a', rhs.a), ('m', rhs.m),
+        ('Nr', g.Nr), ('Nmu', g.Nmu), ('rmin', g.rmin), ('rmax', g.rmax),
+        ('order', g.order), ('ghost', g.ghost),
+        ('dissipation', rhs.dissipation),
+        ('one_sided_horizon', rhs.one_sided_horizon),
+        ('cfl', 0.3), ('dt', dt), ('t_final', 3 * dt), ('record_every', 2),
+    ]:
+        assert key in prov, f"missing provenance field {key!r}"
+        assert prov[key] == expected, f"{key}: {prov[key]!r} != {expected!r}"
+    assert 'git_commit' in prov
+    assert isinstance(prov['git_commit'], str) and len(prov['git_commit']) > 0
+
+
+def test_provenance_before_evolve_omits_run_fields():
+    """cfl/dt/t_final/record_every are omitted if evolve() hasn't run yet
+    (rather than crashing or emitting bogus values)."""
+    evo, g, _ = make_evo()
+    prov = evo.provenance()
+    for key in ('cfl', 'dt', 't_final', 'record_every'):
+        assert key not in prov
+    assert 'M' in prov and 'git_commit' in prov
+
+
+def test_provenance_extra_kwargs_merged():
+    """Basis descriptors (family, bump_index, x_center, ...) are merged in
+    and take precedence over auto-populated fields."""
+    evo, g, _ = make_evo()
+    prov = evo.provenance(family="v", bump_index=7, x_center=1.23,
+                           r_center=3.4, sigma_x=0.05, l_seed=[2, 3, 4, 5, 6],
+                           M=999.0)   # deliberately override an auto field
+    assert prov['family'] == "v"
+    assert prov['bump_index'] == 7
+    assert prov['x_center'] == 1.23
+    assert prov['l_seed'] == [2, 3, 4, 5, 6]
+    assert prov['M'] == 999.0
+
+
+def test_save_waveforms_backward_compatible_without_provenance():
+    """save_waveforms(path) with no provenance arg saves exactly the same
+    keys as before this feature was added."""
+    evo, g, _ = make_evo()
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    evo.add_detector(15.0)
+    dt = evo.cfl_dt(cfl=0.3)
+    evo.evolve(t_final=3 * dt, dt=dt)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "wf_compat")
+        evo.save_waveforms(path)
+        loaded = np.load(path + ".npz")
+        assert set(loaded.keys()) == {
+            'times', 'mu_grid', 'Nmu', 'M', 'a', 'm', 't_current',
+            'waveform_15.000000',
+        }
+
+
+def test_save_waveforms_with_provenance():
+    evo, g, _ = make_evo(a=0.2)
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    evo.add_detector(15.0)
+    dt = evo.cfl_dt(cfl=0.3)
+    evo.evolve(t_final=3 * dt, dt=dt)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "wf_prov")
+        evo.save_waveforms(path, provenance=evo.provenance(family="psi",
+                                                             bump_index=2))
+        loaded = np.load(path + ".npz")
+        assert 'rmin' in loaded and 'rmax' in loaded and 'order' in loaded
+        assert 'git_commit' in loaded
+        assert loaded['family'] == "psi"
+        assert loaded['bump_index'] == 2
+
+
+def test_save_snapshots_backward_compatible_without_provenance():
+    evo, g, _ = make_evo()
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo.cfl_dt(cfl=0.3)
+    evo.evolve(t_final=4 * dt, dt=dt, snapshot_every=2)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "snap_compat")
+        evo.save_snapshots(path)
+        loaded = np.load(path + ".npz")
+        assert set(loaded.keys()) == {
+            'times_snap', 'psi', 'r_grid', 'mu_grid', 'Nr', 'Nmu', 'ghost',
+            'M', 'a', 'm',
+        }
+
+
+# ---------------------------------------------------------------------------
+# n_evolve_steps / SnapshotWriter (§4.4 streaming snapshots)
+# ---------------------------------------------------------------------------
+
+def test_n_evolve_steps_matches_evolve_loop():
+    """n_evolve_steps must exactly predict how many (t, psi) pairs a plain
+    (non-streaming) evolve() run with snapshot_every=1 records."""
+    evo, g, _ = make_evo()
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo.cfl_dt(cfl=0.3)
+    t_final = 7 * dt + 0.37 * dt   # deliberately not an exact multiple of dt
+    evo.evolve(t_final=t_final, dt=dt, snapshot_every=1)
+    assert len(evo.snapshots) == n_evolve_steps(t_final, dt)
+
+
+def test_snapshot_writer_count_snapshots_matches_ram_path():
+    """SnapshotWriter.count_snapshots must match len(evo.snapshots) from
+    the equivalent non-streaming run for the same (t_final, dt, every)."""
+    evo, g, _ = make_evo()
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo.cfl_dt(cfl=0.3)
+    t_final = 9 * dt
+    evo.evolve(t_final=t_final, dt=dt, snapshot_every=3)
+    n_expected = SnapshotWriter.count_snapshots(t_final, dt, 3)
+    assert n_expected == len(evo.snapshots)
+
+
+def test_snapshot_writer_streams_to_disk_not_ram():
+    """When snapshot_writer is given, evo.snapshots must stay empty (data
+    goes to disk instead of accumulating in RAM)."""
+    evo, g, _ = make_evo(Nr=20, Nmu=16)
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo.cfl_dt(cfl=0.3)
+    t_final = 6 * dt
+    n_snap = SnapshotWriter.count_snapshots(t_final, dt, 2)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        writer = SnapshotWriter(os.path.join(tmpdir, "stream"), g, n_snap)
+        evo.evolve(t_final=t_final, dt=dt, snapshot_every=2,
+                   snapshot_writer=writer)
+        writer.close()
+        assert evo.snapshots == []
+        psi_arr = np.load(os.path.join(tmpdir, "stream_psi.npy"))
+        assert psi_arr.shape == (n_snap, g.Nmu, g.Nr)   # interior-only default
+
+
+def test_snapshot_writer_matches_ram_values():
+    """The streamed snapshots must equal (up to the complex64 downcast) the
+    interior psi values that the RAM-accumulating path would have stored."""
+    evo_ram, g, _ = make_evo(Nr=20, Nmu=16)
+    psi = gaussian_psi(g)
+    evo_ram.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo_ram.cfl_dt(cfl=0.3)
+    t_final = 6 * dt
+    evo_ram.evolve(t_final=t_final, dt=dt, snapshot_every=2)
+
+    evo_stream, g2, _ = make_evo(Nr=20, Nmu=16)
+    evo_stream.set_initial_data(psi, psi, dt_init=1e-3)
+    n_snap = SnapshotWriter.count_snapshots(t_final, dt, 2)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        writer = SnapshotWriter(os.path.join(tmpdir, "stream2"), g2, n_snap,
+                                 interior_only=True, dtype=np.complex64)
+        evo_stream.evolve(t_final=t_final, dt=dt, snapshot_every=2,
+                           snapshot_writer=writer)
+        writer.close()
+        psi_arr = np.load(os.path.join(tmpdir, "stream2_psi.npy"))
+
+    gh = g.ghost
+    for k, (t, psi_full) in enumerate(evo_ram.snapshots):
+        expected = psi_full[gh:gh + g.Nmu, gh:gh + g.Nr].astype(np.complex64)
+        assert np.allclose(psi_arr[k], expected, rtol=1e-6, atol=1e-6)
+
+
+def test_snapshot_writer_radial_clip():
+    """r_save_max clips the streamed snapshot's radial extent."""
+    evo, g, _ = make_evo(Nr=40, Nmu=16, M=1.0)
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo.cfl_dt(cfl=0.3)
+    t_final = 4 * dt
+    n_snap = SnapshotWriter.count_snapshots(t_final, dt, 2)
+    r_int = g.r[g.ghost:g.ghost + g.Nr]
+    r_save_max = float(r_int[len(r_int) // 2])   # keep roughly the inner half
+    n_expected_cols = int(np.sum(r_int <= r_save_max))
+    with tempfile.TemporaryDirectory() as tmpdir:
+        writer = SnapshotWriter(os.path.join(tmpdir, "clip"), g, n_snap,
+                                 interior_only=True, r_save_max=r_save_max)
+        evo.evolve(t_final=t_final, dt=dt, snapshot_every=2,
+                   snapshot_writer=writer)
+        writer.close()
+        psi_arr = np.load(os.path.join(tmpdir, "clip_psi.npy"))
+        assert psi_arr.shape[2] == n_expected_cols
+        assert psi_arr.shape[2] < g.Nr   # actually clipped, not a no-op
+
+
+def test_snapshot_writer_dtype_downcast():
+    evo, g, _ = make_evo(Nr=20, Nmu=16)
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo.cfl_dt(cfl=0.3)
+    t_final = 4 * dt
+    n_snap = SnapshotWriter.count_snapshots(t_final, dt, 2)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        writer = SnapshotWriter(os.path.join(tmpdir, "dc"), g, n_snap,
+                                 dtype=np.complex64)
+        evo.evolve(t_final=t_final, dt=dt, snapshot_every=2,
+                   snapshot_writer=writer)
+        writer.close()
+        psi_arr = np.load(os.path.join(tmpdir, "dc_psi.npy"))
+        assert psi_arr.dtype == np.complex64
+
+
+def test_snapshot_writer_meta_and_provenance():
+    evo, g, _ = make_evo(Nr=20, Nmu=16)
+    psi = gaussian_psi(g)
+    evo.set_initial_data(psi, psi, dt_init=1e-3)
+    dt = evo.cfl_dt(cfl=0.3)
+    t_final = 4 * dt
+    n_snap = SnapshotWriter.count_snapshots(t_final, dt, 2)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "meta")
+        writer = SnapshotWriter(path, g, n_snap)
+        evo.evolve(t_final=t_final, dt=dt, snapshot_every=2,
+                   snapshot_writer=writer)
+        writer.close(provenance=evo.provenance(family="psi", bump_index=1))
+        meta = np.load(path + "_meta.npz", allow_pickle=True)
+        assert 'times_snap' in meta and len(meta['times_snap']) == n_snap
+        assert 'r_grid' in meta and 'mu_grid' in meta
+        assert meta['family'] == "psi"
+        assert meta['bump_index'] == 1
+        assert 'git_commit' in meta
 
 
 # ---------------------------------------------------------------------------

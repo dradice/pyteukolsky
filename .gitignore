@@ -21,3 +21,6 @@ dist/
 
 # stability_excision_test.py output files
 *_good_max.png
+
+# SnapshotWriter streamed snapshots (Evolution.evolve(snapshot_writer=...))
+*.npy

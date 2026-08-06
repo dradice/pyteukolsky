@@ -18,7 +18,131 @@ Usage
     evo.save("waveforms.npz")
 """
 
+import os
+import subprocess
+
 import numpy as np
+
+
+def _git_commit_hash():
+    """Return the current git commit hash (with a '-dirty' suffix if the
+    working tree has uncommitted changes), or 'unknown' if git or the repo
+    is unavailable (e.g. a pip-installed copy with no .git directory)."""
+    repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    try:
+        h = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=repo_dir,
+            stderr=subprocess.DEVNULL, text=True).strip()
+        dirty = subprocess.call(
+            ["git", "diff", "--quiet", "HEAD"], cwd=repo_dir,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0
+        return h + ("-dirty" if dirty else "")
+    except Exception:
+        return "unknown"
+
+
+def n_evolve_steps(t_final, dt, t0=0.0):
+    """Number of RK4 steps Evolution.evolve() will take to reach t_final
+    from t0 at fixed step dt -- mirrors evolve()'s loop condition exactly
+    (including the final, possibly-shorter step), so callers can size a
+    streaming SnapshotWriter (or otherwise pre-allocate) before the loop
+    runs.
+    """
+    remaining = t_final - t0
+    t = 0.0
+    n = 0
+    while t < remaining - 1e-12 * dt:
+        t += min(dt, remaining - t)
+        n += 1
+    return n
+
+
+class SnapshotWriter:
+    """Incrementally writes 2D psi snapshots to disk during evolve(), so
+    they never accumulate in RAM. At large-scale run resolutions, full
+    complex128 snapshots can be ~1.4 GB/run; this writer instead streams
+    directly into a preallocated, disk-backed array (a plain numpy .npy
+    memmap -- no extra dependencies) and supports interior-only selection,
+    radial clipping, and float32/complex64 downcast to shrink the
+    footprint further.
+
+    Two files are produced by close():
+      <path>_psi.npy   -- disk-backed array, shape (n_snap, n_mu, n_r)
+      <path>_meta.npz  -- times_snap, r_grid, mu_grid, n_snap, and any
+                           provenance passed to close()
+
+    Usage
+    -----
+        n_snap = SnapshotWriter.count_snapshots(t_final, dt, snapshot_every)
+        writer = SnapshotWriter(path, grid, n_snap, r_save_max=120.0)
+        evo.evolve(t_final, dt=dt, snapshot_every=snapshot_every,
+                   snapshot_writer=writer)
+        writer.close(provenance=evo.provenance(family="psi", bump_index=3))
+    """
+
+    def __init__(self, path, grid, n_snap, interior_only=True,
+                 r_save_max=None, dtype=np.complex64):
+        g = self.grid = grid
+        if interior_only:
+            mu0, mu1 = g.ghost, g.ghost + g.Nmu
+            r0, r1 = g.ghost, g.ghost + g.Nr
+        else:
+            mu0, mu1 = 0, g.shape[0]
+            r0, r1 = 0, g.shape[1]
+        if r_save_max is not None:
+            r_vals = g.r[r0:r1].real
+            n_keep = int(np.searchsorted(r_vals, r_save_max, side="right"))
+            n_keep = int(np.clip(n_keep, 1, r1 - r0))
+            r1 = r0 + n_keep
+
+        self.mu_sl = slice(mu0, mu1)
+        self.r_sl  = slice(r0, r1)
+        self.dtype = dtype
+        self.n_snap = int(n_snap)
+        self.path = path
+
+        shape = (self.n_snap, mu1 - mu0, r1 - r0)
+        self._psi_path = path + "_psi.npy"
+        self.psi = np.lib.format.open_memmap(
+            self._psi_path, mode="w+", dtype=dtype, shape=shape)
+        self.times = np.empty(self.n_snap, dtype=float)
+        self._i = 0
+
+    @staticmethod
+    def count_snapshots(t_final, dt, snapshot_every, t0=0.0):
+        """Exact number of snapshots evolve() will produce for the given
+        (t_final, dt, snapshot_every) -- use this to size n_snap up front."""
+        return n_evolve_steps(t_final, dt, t0) // snapshot_every
+
+    def write(self, t, psi_full):
+        """Write one snapshot slice of the full-grid psi array. Must be
+        called at most n_snap times (evolve() enforces this by construction
+        when n_snap comes from count_snapshots)."""
+        if self._i >= self.n_snap:
+            raise IndexError(
+                f"SnapshotWriter received more than the preallocated "
+                f"n_snap={self.n_snap} writes; recompute n_snap with "
+                f"count_snapshots() for the actual (t_final, dt, "
+                f"snapshot_every)."
+            )
+        self.psi[self._i] = psi_full[self.mu_sl, self.r_sl].astype(self.dtype)
+        self.times[self._i] = t
+        self._i += 1
+
+    def close(self, provenance=None):
+        """Flush the memmap and write the companion metadata .npz."""
+        self.psi.flush()
+        g = self.grid
+        meta = dict(
+            times_snap=self.times[:self._i],
+            r_grid=g.r[self.r_sl],
+            mu_grid=g._mu[self.mu_sl],
+            n_snap=np.array(self._i),
+            psi_path=os.path.basename(self._psi_path),
+        )
+        if provenance:
+            meta.update(provenance)
+        np.savez(self.path + "_meta.npz", **meta)
 
 
 class Evolution:
@@ -182,7 +306,7 @@ class Evolution:
     # ------------------------------------------------------------------
 
     def evolve(self, t_final, cfl=0.5, dt=None, record_every=1,
-               snapshot_every=None, on_step=None):
+               snapshot_every=None, on_step=None, snapshot_writer=None):
         """March the state to t_final, recording detector waveforms.
 
         Parameters
@@ -200,12 +324,26 @@ class Evolution:
         on_step : callable or None
             If given, called with no arguments after every completed RK4
             step.  Intended for progress reporting (e.g. a tqdm update).
+        snapshot_writer : SnapshotWriter or None
+            If given (and snapshot_every is not None), each snapshot is
+            streamed straight to disk via writer.write(t, psi) instead of
+            being appended to self.snapshots -- avoids ever holding more
+            than one full-grid snapshot in RAM at a time (see SnapshotWriter
+            docstring). self.snapshots stays empty ([]) in this mode. If
+            None (default), behaviour is unchanged: snapshots accumulate
+            in self.snapshots as before.
 
         After returning, results are in self.times (shape (Nt,)) and
         self.waveforms ({r_ext: array shape (Nt, Nmu)}).
         """
         if dt is None:
             dt = self.cfl_dt(cfl)
+
+        # Remembered for provenance() -- see save_waveforms/save_snapshots.
+        self._last_cfl = cfl
+        self._last_dt = dt
+        self._last_t_final = t_final
+        self._last_record_every = record_every
 
         g = self.grid
         mu_sl = slice(g.ghost, g.ghost + g.Nmu)
@@ -227,7 +365,10 @@ class Evolution:
                     w_lists[r_ext].append(psi_mu.copy())
 
             if snapshot_every is not None and step_count % snapshot_every == 0:
-                self.snapshots.append((self.t, self.psi.copy()))
+                if snapshot_writer is not None:
+                    snapshot_writer.write(self.t, self.psi)
+                else:
+                    self.snapshots.append((self.t, self.psi.copy()))
 
             if on_step is not None:
                 on_step()
@@ -241,10 +382,41 @@ class Evolution:
                 self.waveforms[r_ext] = np.empty((0, g.Nmu), dtype=complex)
 
     # ------------------------------------------------------------------
+    # Provenance
+    # ------------------------------------------------------------------
+
+    def provenance(self, **extra):
+        """Assemble the full provenance dict for this run's outputs: M, a,
+        m, Nr, Nmu, rmin, rmax, order, ghost, dissipation,
+        one_sided_horizon, cfl, dt, t_final, record_every, and the git
+        commit hash. cfl/dt/t_final/record_every are picked up
+        automatically from the most recent evolve() call (and omitted if
+        evolve() hasn't run yet). Any keyword arguments passed here (e.g.
+        basis descriptors) are merged in and take precedence over the
+        auto-populated fields.
+        """
+        g, eq = self.grid, self.rhs_obj
+        prov = dict(
+            M=eq.M, a=eq.a, m=eq.m,
+            Nr=g.Nr, Nmu=g.Nmu, rmin=g.rmin, rmax=g.rmax,
+            order=g.order, ghost=g.ghost,
+            dissipation=eq.dissipation,
+            one_sided_horizon=eq.one_sided_horizon,
+            cfl=getattr(self, '_last_cfl', None),
+            dt=getattr(self, '_last_dt', None),
+            t_final=getattr(self, '_last_t_final', None),
+            record_every=getattr(self, '_last_record_every', None),
+            git_commit=_git_commit_hash(),
+        )
+        prov = {k: v for k, v in prov.items() if v is not None}
+        prov.update(extra)
+        return prov
+
+    # ------------------------------------------------------------------
     # I/O
     # ------------------------------------------------------------------
 
-    def save_waveforms(self, path):
+    def save_waveforms(self, path, provenance=None):
         """Save detector time series and grid metadata to a .npz file.
 
         Waveforms are small and long-lived; this file is intended to be
@@ -254,6 +426,11 @@ class Evolution:
         ----------
         path : str
             Output path (.npz extension added if absent).
+        provenance : dict or None
+            Extra key/value pairs merged into the saved file (see
+            Evolution.provenance()) -- e.g. run parameters, basis
+            descriptors, git commit hash. Backward compatible: omitting
+            this (the default) saves exactly the same keys as before.
         """
         g  = self.grid
         eq = self.rhs_obj
@@ -268,18 +445,27 @@ class Evolution:
         }
         for r_ext, *_ in self._detectors:
             data[f'waveform_{r_ext:.6f}'] = np.asarray(self.waveforms[r_ext])
+        if provenance:
+            data.update(provenance)
         np.savez(path, **data)
 
-    def save_snapshots(self, path):
+    def save_snapshots(self, path, provenance=None):
         """Save full-grid (psi) snapshots accumulated during evolve() to a .npz.
 
         Snapshots are large; this file is intended for checkpointing or
-        restart and may be overwritten between runs.
+        restart and may be overwritten between runs. For large batches of
+        runs, prefer streaming snapshots directly to disk via
+        SnapshotWriter (passed to evolve() as snapshot_writer) instead of
+        accumulating them in self.snapshots and saving them here.
 
         Parameters
         ----------
         path : str
             Output path (.npz extension added if absent).
+        provenance : dict or None
+            Extra key/value pairs merged into the saved file (see
+            Evolution.provenance()). Backward compatible: omitting this
+            (the default) saves exactly the same keys as before.
         """
         g  = self.grid
         eq = self.rhs_obj
@@ -299,4 +485,6 @@ class Evolution:
             'a':          np.array(eq.a),
             'm':          np.array(eq.m),
         }
+        if provenance:
+            data.update(provenance)
         np.savez(path, **data)
