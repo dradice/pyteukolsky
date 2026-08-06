@@ -94,9 +94,90 @@ def test_swsh_pole_values():
     assert abs(swsh(-2, 2, -2, np.array([-1.0]))[0]) > 0.3
 
 
-def test_swsh_not_implemented():
+def test_swsh_only_spin_minus2_implemented():
+    """swsh generalized to any ell>=2 (§4.2); only spin=-2 is implemented.
+
+    ell=3 (previously NotImplementedError) is now a genuine feature -- see
+    test_swsh_general_ell_matches_hardcoded below -- so this test now probes
+    the spin restriction instead."""
     with pytest.raises(NotImplementedError):
-        swsh(-2, 3, 2, np.array([0.0]))
+        swsh(-1, 2, 0, np.array([0.0]))
+
+
+def test_swsh_ell_below_spin_raises():
+    """ell < |spin| is not a valid spin-weighted spherical harmonic."""
+    with pytest.raises(ValueError):
+        swsh(-2, 1, 0, np.array([0.0]))
+
+
+def test_swsh_m_greater_than_ell_raises():
+    with pytest.raises(ValueError):
+        swsh(-2, 2, 3, np.array([0.0]))
+
+
+# ---------------------------------------------------------------------------
+# swsh: general ell
+# ---------------------------------------------------------------------------
+
+def _swsh_ell2_hardcoded(m, mu):
+    """The module's previous hardcoded ell=2 expressions, kept here only to
+    cross-check the general k-sum implementation now used for all ell."""
+    mu = np.asarray(mu, dtype=float)
+    c2 = np.sqrt(np.maximum((1.0 + mu) / 2.0, 0.0))
+    s2 = np.sqrt(np.maximum((1.0 - mu) / 2.0, 0.0))
+    norm = np.sqrt(5.0 / (4.0 * np.pi))
+    if m == 2:
+        return norm * c2**4
+    elif m == 1:
+        return -2.0 * norm * c2**3 * s2
+    elif m == 0:
+        return np.sqrt(6.0) * norm * c2**2 * s2**2
+    elif m == -1:
+        return -2.0 * norm * c2 * s2**3
+    else:
+        return norm * s2**4
+
+
+def test_swsh_general_ell_matches_hardcoded():
+    """The general Wigner-d k-sum must reproduce the old hardcoded ell=2
+    values to <= 1e-15 for all m = -2..2."""
+    mu = np.linspace(-0.999, 0.999, 37)
+    for m in (2, 1, 0, -1, -2):
+        general  = swsh(-2, 2, m, mu)
+        hardcoded = _swsh_ell2_hardcoded(m, mu)
+        err = np.max(np.abs(general - hardcoded))
+        assert err <= 1e-15, f"m={m}: max|general-hardcoded| = {err:.2e}"
+
+
+def test_swsh_general_ell_2_to_6_runs():
+    """General multipole superpositions need ell=2..6; confirm swsh
+    evaluates without error and returns finite, real values for each."""
+    mu = np.linspace(-0.999, 0.999, 37)
+    for ell in range(2, 7):
+        Y = swsh(-2, ell, 2, mu)
+        assert Y.shape == mu.shape
+        assert np.all(np.isfinite(Y))
+
+
+def test_swsh_general_ell_near_orthonormal():
+    """sum_j _{-2}Y_{l2} _{-2}Y_{l'2} dmu ~ delta_{ll'} to quadrature
+    accuracy, on the staggered grid used by the solver (Nmu=64)."""
+    Nmu = 64
+    dmu = 2.0 / Nmu
+    mu  = -1.0 + (np.arange(1, Nmu + 1) - 0.5) * dmu
+    ells = list(range(2, 7))
+    Ys = {ell: swsh(-2, ell, 2, mu) for ell in ells}
+    expected_diag = 1.0 / (2.0 * np.pi)
+    for l in ells:
+        norm2 = float(np.sum(Ys[l] * Ys[l]) * dmu)
+        assert abs(norm2 - expected_diag) < 5e-3, \
+            f"l={l}: ||Y||^2 dmu = {norm2:.6f}, expected ~{expected_diag:.6f}"
+        for lp in ells:
+            if lp == l:
+                continue
+            cross = float(np.sum(Ys[l] * Ys[lp]) * dmu)
+            assert abs(cross) < 5e-3, \
+                f"l={l}, l'={lp}: cross term = {cross:.6f}, expected ~0"
 
 
 # ---------------------------------------------------------------------------
