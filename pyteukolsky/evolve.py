@@ -67,6 +67,33 @@ class Evolution:
         self.v[:]   = (psi1 - psi0) / dt_init
         self.t      = 0.0
 
+    def set_state(self, psi, v, t=0.0):
+        """Seed (psi, v) directly. Callables are called as f(R, MU).
+
+        Unlike set_initial_data (which derives v from two closely-spaced
+        time slices), this sets psi and v independently -- needed for
+        initial data with psi=0 and a nonzero v, which set_initial_data
+        cannot express cleanly.
+
+        Parameters
+        ----------
+        psi, v : array_like or callable
+            Field values. Callables are called as f(R, MU) where R, MU are
+            2D meshes of shape grid.shape.
+        t : float, optional
+            Initial time (default 0.0).
+        """
+        g = self.grid
+        if callable(psi):
+            psi = psi(g.R, g.MU)
+        if callable(v):
+            v = v(g.R, g.MU)
+        psi = np.asarray(psi, dtype=complex)
+        v   = np.asarray(v, dtype=complex)
+        self.psi[:] = psi
+        self.v[:]   = v
+        self.t      = t
+
     # ------------------------------------------------------------------
     # Detectors
     # ------------------------------------------------------------------

@@ -132,6 +132,69 @@ def test_set_initial_data_resets_time():
 
 
 # ---------------------------------------------------------------------------
+# set_state: seed (psi, v) directly, including psi=0 with a nonzero v,
+# which set_initial_data cannot express.
+# ---------------------------------------------------------------------------
+
+def test_set_state_array():
+    evo, g, _ = make_evo()
+    psi_arr = gaussian_psi(g, r0=10.0)
+    v_arr   = gaussian_psi(g, r0=12.0)
+    evo.set_state(psi_arr, v_arr, t=5.0)
+    assert np.allclose(evo.psi, psi_arr)
+    assert np.allclose(evo.v,   v_arr)
+    assert evo.t == 5.0
+
+
+def test_set_state_default_t_is_zero():
+    evo, g, _ = make_evo()
+    evo.t = 99.0
+    psi_arr = gaussian_psi(g, r0=10.0)
+    evo.set_state(psi_arr, np.zeros(g.shape, dtype=complex))
+    assert evo.t == 0.0
+
+
+def test_set_state_callable():
+    evo, g, _ = make_evo()
+    f_psi = lambda R, MU: np.exp(-((R - 10.0) / 2.0)**2).astype(complex)
+    f_v   = lambda R, MU: np.zeros(R.shape, dtype=complex)
+    evo.set_state(f_psi, f_v)
+    assert np.allclose(evo.psi, f_psi(g.R, g.MU))
+    assert np.allclose(evo.v,   0.0)
+
+
+def test_set_state_v_only_family():
+    """The v-only basis family: psi=0, v=bump. set_initial_data cannot
+    express this cleanly (v = (psi1-psi0)/dt_init requires two psi slices);
+    set_state sets v directly."""
+    evo, g, _ = make_evo()
+    v_bump = gaussian_psi(g, r0=10.0, sigma=1.5)
+    evo.set_state(np.zeros(g.shape, dtype=complex), v_bump)
+    assert np.allclose(evo.psi, 0.0)
+    assert np.allclose(evo.v,   v_bump)
+
+
+def test_set_state_dtype_is_complex():
+    evo, g, _ = make_evo()
+    psi_real = np.exp(-((g.R.real - 10.0))**2)   # plain real array
+    v_real   = np.zeros(g.shape)
+    evo.set_state(psi_real, v_real)
+    assert evo.psi.dtype == np.complex128
+    assert evo.v.dtype   == np.complex128
+
+
+def test_set_state_then_step_evolves():
+    """A run seeded via set_state should evolve just like set_initial_data."""
+    evo, g, _ = make_evo()
+    v_bump = gaussian_psi(g, r0=10.0, sigma=1.5)
+    evo.set_state(np.zeros(g.shape, dtype=complex), v_bump)
+    psi_before = evo.psi.copy()
+    dt = evo.cfl_dt(cfl=0.3)
+    evo.step(dt)
+    assert not np.allclose(evo.psi, psi_before)
+
+
+# ---------------------------------------------------------------------------
 # Detectors
 # ---------------------------------------------------------------------------
 
